@@ -1,0 +1,8 @@
+jupyter
+ipykernel
+
+ffmpeg-python
+
+faster-whisper
+
+python-dotenv
