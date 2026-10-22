@@ -6,3 +6,13 @@ ffmpeg-python
 faster-whisper
 
 python-dotenv
+
+# Image processing (CPU)
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
+torchvision
+transformers==4.49.0
+einops
+timm
+pillow
+rapidocr-onnxruntime

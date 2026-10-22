@@ -1,0 +1,82 @@
+[
+  {
+    "segment_id": 1,
+    "start": 0.0,
+    "end": 5.0,
+    "text": "Questions 32 through 34 refer to the following conversation.",
+    "avg_logprob": -0.11649849286703305,
+    "no_speech_prob": 0.1275177150964737
+  },
+  {
+    "segment_id": 2,
+    "start": 5.0,
+    "end": 10.0,
+    "text": "Good morning. We still need to get our booth ready for the trade show and it opens tomorrow morning.",
+    "avg_logprob": -0.11649849286703305,
+    "no_speech_prob": 0.1275177150964737
+  },
+  {
+    "segment_id": 3,
+    "start": 10.0,
+    "end": 15.0,
+    "text": "I know. I've already packed the brochures and the display table is set up in the corner.",
+    "avg_logprob": -0.11649849286703305,
+    "no_speech_prob": 0.1275177150964737
+  },
+  {
+    "segment_id": 4,
+    "start": 15.0,
+    "end": 21.0,
+    "text": "Great. But the banner we ordered just arrived and it's the wrong size. It's far too small for our booth.",
+    "avg_logprob": -0.11649849286703305,
+    "no_speech_prob": 0.1275177150964737
+  },
+  {
+    "segment_id": 5,
+    "start": 21.0,
+    "end": 26.0,
+    "text": "Hmm. I can call the supplier right now and ask them to reprint it overnight.",
+    "avg_logprob": -0.11649849286703305,
+    "no_speech_prob": 0.1275177150964737
+  },
+  {
+    "segment_id": 6,
+    "start": 26.0,
+    "end": 32.0,
+    "text": "That would be perfect. I have to go to a meeting with the sales team in a few minutes, so could you handle that?",
+    "avg_logprob": -0.09444335761008324,
+    "no_speech_prob": 0.08098285645246506
+  },
+  {
+    "segment_id": 7,
+    "start": 32.0,
+    "end": 37.0,
+    "text": "Of course. I'll contact them and make sure the new banner is ready by this afternoon.",
+    "avg_logprob": -0.09444335761008324,
+    "no_speech_prob": 0.08098285645246506
+  },
+  {
+    "segment_id": 8,
+    "start": 37.0,
+    "end": 43.0,
+    "text": "Number 32. Where is the conversation most likely taking place?",
+    "avg_logprob": -0.09444335761008324,
+    "no_speech_prob": 0.08098285645246506
+  },
+  {
+    "segment_id": 9,
+    "start": 49.0,
+    "end": 54.0,
+    "text": "Number 33. What problem does the man mention?",
+    "avg_logprob": -0.09444335761008324,
+    "no_speech_prob": 0.08098285645246506
+  },
+  {
+    "segment_id": 10,
+    "start": 56.0,
+    "end": 63.0,
+    "text": "Number 34. Where will the man go next?",
+    "avg_logprob": -0.16999820104012123,
+    "no_speech_prob": 0.010851500555872917
+  }
+]
