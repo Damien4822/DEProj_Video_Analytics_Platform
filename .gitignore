@@ -11,3 +11,6 @@ __pycache__/
 # Local data
 local/**/input/*
 local/**/output/*
+# Machine-specific config
+local/ssl.env
+.vscode/
