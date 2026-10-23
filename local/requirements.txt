@@ -19,3 +19,7 @@ rapidocr-onnxruntime
 
 # Video download
 yt-dlp
+
+# Kafka pipeline
+confluent-kafka
+pyyaml

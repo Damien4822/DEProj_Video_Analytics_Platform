@@ -8,9 +8,10 @@ __pycache__/
 .ipynb_checkpoints/
 
 
-# Local data
-local/**/input/*
-local/**/output/*
+# Demo media (large, re-downloadable)
+local/demo/**/*.mp4
+local/demo/**/*.wav
+
 # Machine-specific config
 local/ssl.env
 .vscode/

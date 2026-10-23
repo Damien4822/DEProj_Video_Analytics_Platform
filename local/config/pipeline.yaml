@@ -1,0 +1,25 @@
+kafka:
+  # Override with the KAFKA_BOOTSTRAP_SERVERS env var or --bootstrap
+  bootstrap_servers: localhost:9092
+
+# Topics are persistent and named by event type (not per run or per video).
+# A video/run is identified by the message key (video_id) and the message envelope.
+topics:
+  defaults:
+    partitions: 3
+    replication_factor: 1          # single local broker
+    retention_ms: 604800000        # 7 days, long enough to replay a stage
+
+  items:
+    video.requested: {}            # {url, clip_seconds}
+    video.stored: {}               # video in MinIO + metadata
+    audio.done: {}                 # audio transcription finished
+    frame.extracted:               # one message per keyframe; the slow stage scales on this
+      partitions: 6                # max parallel vision workers (key: video_id + frame_idx)
+    frame.described:
+      partitions: 6
+    chunk.ready: {}
+    chunk.embedded: {}
+    pipeline.errors:
+      partitions: 1
+      retention_ms: 2592000000     # 30 days
