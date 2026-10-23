@@ -16,3 +16,6 @@ einops
 timm
 pillow
 rapidocr-onnxruntime
+
+# Video download
+yt-dlp
