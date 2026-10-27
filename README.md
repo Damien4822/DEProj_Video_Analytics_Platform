@@ -43,8 +43,10 @@ Design choice: everything is **CPU-friendly and lightweight** so it runs on a la
 | Video download (yt-dlp) in the setup notebook | Working |
 | Local infra definition (Kafka, S3-compatible store, Postgres + pgvector via Docker Compose) | Written |
 | Topic config + idempotent topic-creation script | Written |
-| Kafka workers (downloader, audio, frames, vision, chunk builder, embedder) | Folder skeleton only |
-| Postgres schema | Designed, DDL not yet written |
+| Message schemas, Postgres/S3/Kafka helpers, quality checks (`src/vidpipe`) | Written, unit-tested |
+| Downloader and audio workers, `submit_video.py` | Written |
+| Frame extractor, vision worker, chunk builder, embedder | Folder skeleton only |
+| Postgres schema | DDL written for `videos`, `processing_runs`, `audio_segments`; the rest designed |
 | Cloud (AWS / Databricks) | Planned, nothing built |
 
 The notebooks are the proof of the extraction logic. The Kafka services are the next step: moving the same logic into independent, scalable workers.
@@ -245,19 +247,22 @@ flowchart LR
 ```
 .
 ├── README.md
-├── src/vidpipe/                 # shared, cloud-agnostic pipeline code (models, stages, schemas)
+├── pyproject.toml
+├── src/vidpipe/                 # shared pipeline code: message schemas, Kafka/S3/Postgres helpers, quality checks
 └── local/                       # everything that runs on a laptop or VM
     ├── config/pipeline.yaml     # Kafka bootstrap + topic definitions
     ├── infra/
     │   ├── docker-compose.yml   # Kafka (KRaft), Kafka UI, RustFS (S3), Postgres + pgvector
     │   └── .env.example
     ├── scripts/create_topics.py # idempotent topic create/update
+    ├── scripts/submit_video.py  # entry point: publish a URL or file to video.requested
+    ├── scripts/apply_sql.py     # apply sql/*.sql to an existing database
     ├── scripts/init_storage.py  # idempotent bucket creation
     ├── services/                # one folder per worker (skeleton)
     │   ├── downloader/  audio_worker/  frame_extractor/
     │   └── vision_worker/  chunk_builder/  embedder/  summarizer/
     ├── sql/                     # schema DDL, run on first Postgres start
-    ├── tests/
+    ├── tests/                   # unit tests and DB idempotency tests
     ├── demo/                    # the notebook experiments
     │   ├── Setup.ipynb          # env checks + sample downloads
     │   ├── audio/transcript.ipynb
@@ -295,6 +300,28 @@ python scripts/init_storage.py              # create the bucket
 ```
 
 Kafka UI is at http://localhost:8080 and the object-store console at http://localhost:9001.
+
+Run the pipeline (the downloader and audio worker), from `local/`, each in its own terminal:
+
+```bash
+pip install -e ..                           # once: makes the shared `vidpipe` package importable
+python scripts/apply_sql.py                 # create the tables (skip if the volume was just created)
+
+python -m services.downloader.worker        # terminal 1
+python -m services.audio_worker.worker      # terminal 2
+
+python scripts/submit_video.py "<video url>"            # terminal 3: submit a URL
+python scripts/submit_video.py --file path/to/video.mp4  # or a local file
+```
+
+Check the result in Postgres:
+
+```sql
+SELECT start_s, end_s, text FROM audio_segments WHERE video_id = '<video_id>' ORDER BY start_s;
+SELECT stage, status, attempts, error FROM processing_runs WHERE video_id = '<video_id>';
+```
+
+Failures land on the `pipeline.errors` topic (visible in Kafka UI) and as a `failed` row in `processing_runs`. Tests: `pytest` from `local/` (the database tests are skipped when Postgres is not running).
 
 ## Known constraints
 
