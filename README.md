@@ -41,7 +41,7 @@ Design choice: everything is **CPU-friendly and lightweight** so it runs on a la
 | Single-image CV + OCR notebook | Working |
 | Video notebook: audio + keyframe visuals + OCR, merged timeline JSON | Working |
 | Video download (yt-dlp) in the setup notebook | Working |
-| Local infra definition (Kafka, MinIO, Postgres + pgvector via Docker Compose) | Written |
+| Local infra definition (Kafka, S3-compatible store, Postgres + pgvector via Docker Compose) | Written |
 | Topic config + idempotent topic-creation script | Written |
 | Kafka workers (downloader, audio, frames, vision, chunk builder, embedder) | Folder skeleton only |
 | Postgres schema | Designed, DDL not yet written |
@@ -81,7 +81,7 @@ The notebooks are sequential and single-process. The target is an event-driven p
 flowchart LR
     U([Video URL]) --> T1[[video.requested]]
     T1 --> DL[downloader]
-    DL -->|video file| S3[(MinIO / S3)]
+    DL -->|video file| S3[(S3-compatible store)]
     DL --> T2[[video.stored]]
 
     T2 --> AW[audio_worker<br/>ffmpeg + faster-whisper]
@@ -200,7 +200,7 @@ The local stack maps one-to-one onto managed services, so the pipeline code shou
 flowchart LR
     subgraph Local
         L1[Kafka in Docker]
-        L2[MinIO]
+        L2[RustFS S3]
         L3[Postgres + pgvector]
         L4[Workers on CPU]
     end
@@ -229,7 +229,7 @@ flowchart LR
 ### AWS plan
 
 - **Compute**: an EC2 GPU instance (g4dn.xlarge, Deep Learning AMI) for the vision and Whisper workers. It is started for a batch and terminated after, since a GPU is only worth paying for while it works.
-- **Storage**: S3 replaces MinIO. The code already talks the S3 API, so this is an endpoint change.
+- **Storage**: S3 replaces the local RustFS store. The code already talks the S3 API, so this is an endpoint change.
 - **Infrastructure as code**: Terraform with two stacks. A *persistent* stack (S3, networking, IAM, database) and an *ephemeral* stack (the GPU instance) that can be applied and destroyed per run, with an auto-terminate safeguard.
 - **Access**: SSM Session Manager instead of open SSH ports.
 - **Prerequisite**: a GPU instance vCPU quota increase request.
@@ -249,9 +249,10 @@ flowchart LR
 └── local/                       # everything that runs on a laptop or VM
     ├── config/pipeline.yaml     # Kafka bootstrap + topic definitions
     ├── infra/
-    │   ├── docker-compose.yml   # Kafka (KRaft), Kafka UI, MinIO, Postgres + pgvector
+    │   ├── docker-compose.yml   # Kafka (KRaft), Kafka UI, RustFS (S3), Postgres + pgvector
     │   └── .env.example
     ├── scripts/create_topics.py # idempotent topic create/update
+    ├── scripts/init_storage.py  # idempotent bucket creation
     ├── services/                # one folder per worker (skeleton)
     │   ├── downloader/  audio_worker/  frame_extractor/
     │   └── vision_worker/  chunk_builder/  embedder/  summarizer/
@@ -290,9 +291,10 @@ docker compose up -d
 cd ..
 python scripts/create_topics.py --dry-run   # preview
 python scripts/create_topics.py             # apply
+python scripts/init_storage.py              # create the bucket
 ```
 
-Kafka UI is at http://localhost:8080 and the MinIO console at http://localhost:9001.
+Kafka UI is at http://localhost:8080 and the object-store console at http://localhost:9001.
 
 ## Known constraints
 

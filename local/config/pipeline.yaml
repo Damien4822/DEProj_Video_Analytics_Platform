@@ -12,7 +12,7 @@ topics:
 
   items:
     video.requested: {}            # {url, clip_seconds}
-    video.stored: {}               # video in MinIO + metadata
+    video.stored: {}               # video in object storage + metadata
     audio.done: {}                 # audio transcription finished
     frame.extracted:               # one message per keyframe; the slow stage scales on this
       partitions: 6                # max parallel vision workers (key: video_id + frame_idx)
