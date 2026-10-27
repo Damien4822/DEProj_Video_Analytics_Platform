@@ -17,8 +17,8 @@ timm
 pillow
 rapidocr-onnxruntime
 
-# Video download
-yt-dlp
+# Video download ([default] adds the extras YouTube needs; keep yt-dlp up to date)
+yt-dlp[default]
 
 # Kafka pipeline
 confluent-kafka
