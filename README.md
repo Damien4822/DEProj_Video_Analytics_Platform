@@ -45,8 +45,10 @@ Design choice: everything is **CPU-friendly and lightweight** so it runs on a la
 | Topic config + idempotent topic-creation script | Written |
 | Message schemas, Postgres/S3/Kafka helpers, quality checks (`src/vidpipe`) | Written, unit-tested |
 | Downloader and audio workers, `submit_video.py` | Written |
-| Frame extractor, vision worker, chunk builder, embedder | Folder skeleton only |
-| Postgres schema | DDL written for `videos`, `processing_runs`, `audio_segments`; the rest designed |
+| Frame extractor and vision worker (Florence-2 + OCR) | Written, tests pass; not yet run end to end |
+| Chunk builder (time-window chunks of speech, scene and on-screen text) | Written, tests pass; not yet run end to end |
+| Embedder, summarizer | Folder skeleton only |
+| Postgres schema | DDL written for `videos`, `processing_runs`, audio, visual and chunk tables (with views for segment end times and per-video progress); embeddings designed |
 | Cloud (AWS / Databricks) | Planned, nothing built |
 
 The notebooks are the proof of the extraction logic. The Kafka services are the next step: moving the same logic into independent, scalable workers.
@@ -73,7 +75,7 @@ flowchart TD
     M --> J[(transcript.json<br/>audio_segments, visual_segments,<br/>timeline, language, duration, fps)]
 ```
 
-Why keyframes instead of every frame: running a vision model on all frames is wasteful, since most consecutive frames are near-identical. Frames are sampled at 1 fps and a frame is kept only when it differs enough from the last kept one (downscaled grayscale diff, threshold 16). Each visual segment lasts from its keyframe until the next one.
+Why keyframes instead of every frame: running a vision model on all frames is wasteful, since most consecutive frames are near-identical. Frames are sampled at 1 fps and a frame is kept only when it differs enough from the last kept one (downscaled grayscale diff, threshold 8). Each visual segment lasts from its keyframe until the next one.
 
 ## Target architecture (Kafka pipeline)
 
@@ -309,8 +311,11 @@ python scripts/apply_sql.py                 # create the tables (skip if the vol
 
 python -m services.downloader.worker        # terminal 1
 python -m services.audio_worker.worker      # terminal 2
+python -m services.frame_extractor.worker   # terminal 3
+python -m services.vision_worker.worker     # terminal 4 (start more copies to go faster)
+python -m services.chunk_builder.worker     # terminal 5
 
-python scripts/submit_video.py "<video url>"            # terminal 3: submit a URL
+python scripts/submit_video.py "<video url>"            # terminal 6: submit a URL
 python scripts/submit_video.py --file path/to/video.mp4  # or a local file
 ```
 
@@ -319,6 +324,13 @@ Check the result in Postgres:
 ```sql
 SELECT start_s, end_s, text FROM audio_segments WHERE video_id = '<video_id>' ORDER BY start_s;
 SELECT stage, status, attempts, error FROM processing_runs WHERE video_id = '<video_id>';
+
+-- what is on screen, with derived end times, and how far the video has got
+SELECT start_s, end_s, caption FROM visual_segments_timed WHERE video_id = '<video_id>' ORDER BY start_s;
+SELECT * FROM video_progress WHERE video_id = '<video_id>';   -- frames_described should reach keyframe_count
+
+-- the chunks that will be embedded: speech + scene + on-screen text per time window
+SELECT chunk_idx, start_s, end_s, text FROM chunks WHERE video_id = '<video_id>' ORDER BY chunk_idx;
 ```
 
 Failures land on the `pipeline.errors` topic (visible in Kafka UI) and as a `failed` row in `processing_runs`. Tests: `pytest` from `local/` (the database tests are skipped when Postgres is not running).
@@ -333,7 +345,7 @@ Failures land on the `pipeline.errors` topic (visible in Kafka UI) and as a `fai
 
 1. Bring up the local stack and create the topics.
 2. Define the message envelope and schemas in `src/vidpipe/schemas`.
-3. Implement the downloader, then audio and frame workers, then the vision workers.
-4. Chunk builder, embedder (try one embedding model first), and the Postgres DDL.
+3. Run the downloader, audio, frame extractor and vision workers end to end and record a scaling benchmark (1 versus N vision workers).
+4. Embedder (try one embedding model first) and the embeddings table.
 5. Search over chunks (semantic query returning video, timestamp and text).
 6. Terraform for the AWS GPU stack; Databricks storage and vector search.

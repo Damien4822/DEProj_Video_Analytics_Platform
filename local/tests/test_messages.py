@@ -45,3 +45,21 @@ def test_unknown_fields_are_ignored():
 def test_missing_required_field_is_rejected():
     with pytest.raises(ValidationError):
         AudioDone.model_validate_json('{"video_id":"v","run_id":"r"}')
+
+
+def test_frame_messages_are_keyed_per_frame_but_video_messages_per_video():
+    from vidpipe.schemas import FrameExtracted
+
+    frame = FrameExtracted(video_id="v", run_id="r", frame_idx=3, start_s=1.0,
+                           frame_uri="s3://b/f.jpg", frame_count=5, width=10, height=10)
+    stored = VideoStored(video_id="v", run_id="r", video_uri="s3://b/k", filename="k", duration_s=1)
+    assert frame.partition_key() == "v:3"
+    assert stored.partition_key() == "v"
+
+
+def test_chunk_ready_is_keyed_by_chunk():
+    from vidpipe.schemas import ChunkReady
+
+    msg = ChunkReady(video_id="v", run_id="r", chunk_id="c1", chunk_idx=0, chunk_version="w45-o10",
+                     start_s=0, end_s=45, chunk_count=3)
+    assert msg.partition_key() == "c1"

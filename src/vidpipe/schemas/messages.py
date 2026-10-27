@@ -15,6 +15,9 @@ class Topics:
     VIDEO_REQUESTED = "video.requested"
     VIDEO_STORED = "video.stored"
     AUDIO_DONE = "audio.done"
+    FRAME_EXTRACTED = "frame.extracted"
+    FRAME_DESCRIBED = "frame.described"
+    CHUNK_READY = "chunk.ready"
     PIPELINE_ERRORS = "pipeline.errors"
 
 
@@ -29,6 +32,10 @@ class Message(BaseModel):
     video_id: str
     run_id: str
     emitted_at: datetime = Field(default_factory=_now)
+
+    def partition_key(self):
+        """Kafka message key. Messages with the same key stay ordered within a partition."""
+        return self.video_id
 
 
 class VideoRequested(Message):
@@ -59,6 +66,47 @@ class AudioDone(Message):
     asr_model: str
     language: Optional[str] = None
     language_probability: Optional[float] = None
+
+
+class FrameExtracted(Message):
+    """One keyframe, stored as an image. Keyed per frame so vision workers share the load."""
+
+    frame_idx: int
+    start_s: float
+    frame_uri: str
+    frame_count: int                     # total keyframes of this video (completion check)
+    width: int
+    height: int
+
+    def partition_key(self):
+        return f"{self.video_id}:{self.frame_idx}"
+
+
+class FrameDescribed(Message):
+    frame_idx: int
+    start_s: float
+    frame_count: int
+    caption: str
+    object_count: int
+    ocr_count: int
+    vision_model: str
+
+    def partition_key(self):
+        return f"{self.video_id}:{self.frame_idx}"
+
+
+class ChunkReady(Message):
+    """One chunk of a video is built and stored in Postgres. The text is read from there."""
+
+    chunk_id: str
+    chunk_idx: int
+    chunk_version: str                   # chunking parameters, e.g. "w45-o10"
+    start_s: float
+    end_s: float
+    chunk_count: int
+
+    def partition_key(self):
+        return self.chunk_id
 
 
 class ErrorEvent(Message):

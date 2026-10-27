@@ -39,3 +39,29 @@ def clean_segments(raw_segments, duration_s):
             "text": text,
         })
     return cleaned, issues
+
+
+def _clamp_box(bbox, width, height):
+    x1, y1, x2, y2 = (float(v) for v in bbox)
+    return [max(0.0, min(x1, width)), max(0.0, min(y1, height)),
+            max(0.0, min(x2, width)), max(0.0, min(y2, height))]
+
+
+def clean_boxes(items, width, height, text_key):
+    """Clamp boxes into the image and drop empty labels or degenerate boxes.
+
+    items: dicts with text_key ('label' or 'text') and bbox [x1, y1, x2, y2].
+    Returns (items, issues).
+    """
+    issues, cleaned = [], []
+    for i, item in enumerate(items):
+        text = (item.get(text_key) or "").strip()
+        if not text:
+            issues.append(f"item {i}: empty {text_key}, dropped")
+            continue
+        box = _clamp_box(item["bbox"], width, height)
+        if box[2] <= box[0] or box[3] <= box[1]:
+            issues.append(f"item {i}: degenerate box {item['bbox']}, dropped")
+            continue
+        cleaned.append({**item, text_key: text, "bbox": box})
+    return cleaned, issues

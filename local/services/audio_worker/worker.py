@@ -54,6 +54,7 @@ def handle(msg: VideoStored) -> AudioDone:
             log.warning("video %s has no audio stream", msg.video_id)
             with db.connect() as conn:
                 db.replace_audio_segments(conn, msg.video_id, [], cfg.whisper_model)
+                db.upsert_video(conn, msg.video_id, audio_segment_count=0)
             return AudioDone(video_id=msg.video_id, run_id=msg.run_id, duration_s=msg.duration_s,
                              segment_count=0, asr_model=cfg.whisper_model)
 
@@ -70,7 +71,8 @@ def handle(msg: VideoStored) -> AudioDone:
 
     with db.connect() as conn:
         db.replace_audio_segments(conn, msg.video_id, cleaned, cfg.whisper_model)
-        db.upsert_video(conn, msg.video_id, language=info.language)
+        # audio_segment_count doubles as the "audio is finished" flag the chunk builder checks
+        db.upsert_video(conn, msg.video_id, language=info.language, audio_segment_count=len(cleaned))
     log.info("transcribed %s: %d segments, language %s", msg.video_id, len(cleaned), info.language)
 
     return AudioDone(

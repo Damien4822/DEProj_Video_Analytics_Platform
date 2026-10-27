@@ -36,6 +36,17 @@ class Settings:
     whisper_device: str = _env("WHISPER_DEVICE", "cpu")
     whisper_compute_type: str = _env("WHISPER_COMPUTE_TYPE", "int8")
 
+    # Keyframe selection and vision models (values from the video notebook).
+    sample_fps: float = float(_env("SAMPLE_FPS", "1"))
+    diff_threshold: float = float(_env("DIFF_THRESHOLD", "8.0"))
+    ocr_min_score: float = float(_env("OCR_MIN_SCORE", "0.5"))
+    vision_model: str = _env("VISION_MODEL", "microsoft/Florence-2-base")
+    vision_device: str = _env("VISION_DEVICE", "cpu")
+
+    # Chunking: window length and overlap in seconds. Changing them makes a new chunk_version.
+    chunk_window_s: float = float(_env("CHUNK_WINDOW_S", "45"))
+    chunk_overlap_s: float = float(_env("CHUNK_OVERLAP_S", "10"))
+
     # Same selector as the Setup notebook: cap the height, not the length.
     ytdlp_format: str = _env("YTDLP_FORMAT", "bv*[height<=720]+ba/b[height<=720]/b")
     # Set to 1 on networks that re-sign HTTPS (use the system CA store instead of certifi).
