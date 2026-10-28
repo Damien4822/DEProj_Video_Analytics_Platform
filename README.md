@@ -47,8 +47,10 @@ Design choice: everything is **CPU-friendly and lightweight** so it runs on a la
 | Downloader and audio workers, `submit_video.py` | Written |
 | Frame extractor and vision worker (Florence-2 + OCR) | Written, tests pass; not yet run end to end |
 | Chunk builder (time-window chunks of speech, scene and on-screen text) | Written, tests pass; not yet run end to end |
-| Embedder, summarizer | Folder skeleton only |
-| Postgres schema | DDL written for `videos`, `processing_runs`, audio, visual and chunk tables (with views for segment end times and per-video progress); embeddings designed |
+| Timeline builder (whole-video transcript JSON, same shape as the notebook output) | Written, tests pass; not yet run end to end |
+| Summarizer (local LLM through Ollama: short summary with key moments, from the transcript) | Written, tests pass with a fake LLM; not yet run with a real model |
+| Embedder | Folder skeleton only |
+| Postgres schema | DDL written for `videos`, `processing_runs`, audio, visual, chunk and timeline tables (with views for segment end times and per-video progress); embeddings designed |
 | Cloud (AWS / Databricks) | Planned, nothing built |
 
 The notebooks are the proof of the extraction logic. The Kafka services are the next step: moving the same logic into independent, scalable workers.
@@ -103,18 +105,58 @@ flowchart LR
     EM --> T7[[chunk.embedded]]
     T7 --> PG[(Postgres + pgvector)]
 
+    T3 --> TB[timeline_builder<br/>whole-video transcript]
+    T5 --> TB
+    TB -->|transcript.json| S3
+    TB --> T8[[timeline.ready]]
+    T8 --> SM[summarizer<br/>local LLM via Ollama]
+    SM --> T9[[summary.ready]]
+    SM --> PG
+
     DL -.error.-> ERR[[pipeline.errors]]
     AW -.error.-> ERR
     VW -.error.-> ERR
     CB -.error.-> ERR
+    TB -.error.-> ERR
+    SM -.error.-> ERR
     EM -.error.-> ERR
 ```
+
+### Two parallel outputs
+
+Once a video is complete (audio finished, keyframes extracted, every keyframe described), two independent workers read the same results from Postgres, each in its own consumer group:
+
+| Output | Worker | Shape | Purpose |
+| --- | --- | --- | --- |
+| **Transcript** | `timeline_builder` | One JSON per video in object storage (`timeline/<video_id>/transcript.json`): `audio_segments`, `visual_segments` (caption, objects, OCR), and a merged `timeline` of speech, caption and on-screen text per keyframe. Same shape as the notebook output. | Reading what happens in the video, start to end |
+| **Chunks** | `chunk_builder` | 45 s windows (10 s overlap) in the `chunks` table, each with one combined text, later embedded | Semantic search, with timestamps |
+
+The transcript is the complete record of the video. Chunks overlap on purpose, so they are not meant to be concatenated into a transcript. Neither worker depends on the other, and a failure in one does not block the other. Both use the same completeness check (`db.is_complete`).
+
+In the transcript's `timeline`, a sentence that spans several keyframes appears in each of their entries (the notebook behaves the same). `audio_segments` holds each sentence once.
+
+### Short summary (local LLM)
+
+The summarizer is a third consumer of the finished video, but it works on the transcript, not on Postgres tables. It reads `timeline.ready`, loads `transcript.json` from object storage and turns it into timestamped notes, one line per keyframe:
+
+```
+[00:00-00:15] Scene: a logo. On-screen: TED. Speech: A few years ago, I felt like I was stuck in a rut...
+```
+
+A local LLM served by [Ollama](https://ollama.com) (default `qwen2.5:3b`, a size that fits a CPU VM with a few GB of free RAM) writes a 3-5 sentence summary plus up to 5 key moments, each with its timestamp. The result goes to `video_summaries`.
+
+- **Long videos use map-reduce.** Notes are packed into batches of `SUMMARY_BATCH_CHARS` (default 8000). If there is more than one batch, each is summarised, then the partial summaries are summarised again. The loop stops with an error if the text does not shrink, instead of calling the LLM forever.
+- **The LLM call is skipped when nothing changed.** The summary stores the hash of the transcript and the model name it was made from. A redelivered message, or a rebuilt but identical transcript, does not call the model again.
+- **A sentence is written once in the notes**, on the first keyframe it overlaps, so the model does not read repeated speech.
+- **The model is behind one `generate(prompt, system)` method** (`vidpipe/models/llm.py`). Change `LLM_MODEL` for another Ollama model, or add a class for another runtime.
+- Summaries from a 3B model can contain mistakes: it only sees machine-generated notes (speech recognition and captions), so treat it as an aid for reading, not as ground truth.
 
 ### Design decisions
 
 - **Persistent, generically named topics** (`video.requested`, `chunk.ready`, ...), not one set of topics per run. A video is identified by the message key (`video_id`) and the message envelope. Topics are created by a script (`local/scripts/create_topics.py`) from `local/config/pipeline.yaml`, not by Docker Compose, so the topic set is versioned config and auto-creation is disabled (a typo in a topic name fails instead of silently creating a new topic).
 - **Key by `video_id`** so all messages of one video stay ordered within a partition. The frame topics key by `video_id + frame_idx` to spread frames across workers.
 - **Idempotent consumers**: every write is an upsert on a deterministic ID, so a redelivered message cannot create duplicates (Kafka is at-least-once).
+- **Completion is read from the database, not held in a worker.** The extractor stores `keyframe_count`, the audio worker stores `audio_segment_count`, and the builders compare them with what has arrived. The builders keep no state, so they can be restarted or run twice.
 - **Out-of-order tolerant**: parallel workers finish in any order. Workers emit only a `start_s`; the aggregator derives each segment's end from the next start.
 - **Dead-letter topic** (`pipeline.errors`) with an envelope that records the failed stage, original message and error, so failures are inspectable and replayable.
 - **Swappable models**: transcription, vision and embedding models sit behind small interfaces (planned in `src/vidpipe`), and the embedding model name is stored with each vector.
@@ -132,6 +174,8 @@ erDiagram
     visual_segments ||--o{ detected_objects : contains
     visual_segments ||--o{ ocr_items : contains
     videos ||--o{ chunks : has
+    videos ||--o| video_timelines : has
+    videos ||--o| video_summaries : has
     chunks ||--o{ chunk_embeddings : embedded_as
 
     videos {
@@ -178,6 +222,19 @@ erDiagram
         float end_s
         text text
     }
+    video_timelines {
+        uuid video_id PK
+        text timeline_uri
+        text content_sha256
+        int audio_segment_count
+        int visual_segment_count
+    }
+    video_summaries {
+        uuid video_id PK
+        text summary
+        text model
+        text source_sha256
+    }
     chunk_embeddings {
         text chunk_id FK
         text embedding_model
@@ -185,7 +242,7 @@ erDiagram
     }
 ```
 
-Videos have no universal field set, so the `videos` table keeps general metadata (name, source, link, duration, language) and the content-specific detail lives in the segment tables. `chunk_id` is deterministic (derived from `video_id` and the time range), which makes re-runs idempotent. If pgvector becomes a limit, the same layout migrates to Qdrant by moving only `chunk_embeddings`.
+Videos have no universal field set, so the `videos` table keeps general metadata (name, source, link, duration, language) and the content-specific detail lives in the segment tables. `chunk_id` is deterministic (derived from `video_id` and the time range), which makes re-runs idempotent. `video_timelines` only points to the transcript JSON in object storage and holds its hash, so a rebuild that produces identical output is recognised and emits no event. `video_summaries` keeps the summary text with the model and transcript hash it came from. If pgvector becomes a limit, the same layout migrates to Qdrant by moving only `chunk_embeddings`.
 
 ## Scaling design
 
@@ -260,9 +317,11 @@ flowchart LR
     ├── scripts/submit_video.py  # entry point: publish a URL or file to video.requested
     ├── scripts/apply_sql.py     # apply sql/*.sql to an existing database
     ├── scripts/init_storage.py  # idempotent bucket creation
-    ├── services/                # one folder per worker (skeleton)
+    ├── services/                # one folder per worker (the embedder is still a skeleton)
     │   ├── downloader/  audio_worker/  frame_extractor/
-    │   └── vision_worker/  chunk_builder/  embedder/  summarizer/
+    │   ├── vision_worker/  chunk_builder/  timeline_builder/
+    │   ├── summarizer/
+    │   └── embedder/
     ├── sql/                     # schema DDL, run on first Postgres start
     ├── tests/                   # unit tests and DB idempotency tests
     ├── demo/                    # the notebook experiments
@@ -303,7 +362,13 @@ python scripts/init_storage.py              # create the bucket
 
 Kafka UI is at http://localhost:8080 and the object-store console at http://localhost:9001.
 
-Run the pipeline (the downloader and audio worker), from `local/`, each in its own terminal:
+The summarizer needs a local LLM server. Install [Ollama](https://ollama.com/download) and pull the model once (about 2 GB):
+
+```bash
+ollama pull qwen2.5:3b          # Ollama listens on http://localhost:11434
+```
+
+Run the pipeline, from `local/`, each in its own terminal:
 
 ```bash
 pip install -e ..                           # once: makes the shared `vidpipe` package importable
@@ -313,9 +378,13 @@ python -m services.downloader.worker        # terminal 1
 python -m services.audio_worker.worker      # terminal 2
 python -m services.frame_extractor.worker   # terminal 3
 python -m services.vision_worker.worker     # terminal 4 (start more copies to go faster)
-python -m services.chunk_builder.worker     # terminal 5
+python -m services.chunk_builder.worker     # terminal 5 (chunks, for search)
+python -m services.timeline_builder.worker  # terminal 6 (whole-video transcript JSON)
+python -m services.summarizer.worker        # terminal 7 (short summary; needs Ollama running)
 
-python scripts/submit_video.py "<video url>"            # terminal 6: submit a URL
+python scripts/create_topics.py             # again, if the stack was created before timeline.ready existed
+
+python scripts/submit_video.py "<video url>"            # terminal 8: submit a URL
 python scripts/submit_video.py --file path/to/video.mp4  # or a local file
 ```
 
@@ -329,6 +398,12 @@ SELECT stage, status, attempts, error FROM processing_runs WHERE video_id = '<vi
 SELECT start_s, end_s, caption FROM visual_segments_timed WHERE video_id = '<video_id>' ORDER BY start_s;
 SELECT * FROM video_progress WHERE video_id = '<video_id>';   -- frames_described should reach keyframe_count
 
+-- the whole-video transcript: where the JSON is stored (open it in the object-store console, or download it)
+SELECT timeline_uri, audio_segment_count, visual_segment_count FROM video_timelines WHERE video_id = '<video_id>';
+
+-- the short summary written by the local LLM
+SELECT model, summary FROM video_summaries WHERE video_id = '<video_id>';
+
 -- the chunks that will be embedded: speech + scene + on-screen text per time window
 SELECT chunk_idx, start_s, end_s, text FROM chunks WHERE video_id = '<video_id>' ORDER BY chunk_idx;
 ```
@@ -338,6 +413,7 @@ Failures land on the `pipeline.errors` topic (visible in Kafka UI) and as a `fai
 ## Known constraints
 
 - **CPU only**, which keeps it portable but slow for long videos. GPU work is planned on AWS.
+- **Memory is tight on a small VM.** Whisper, Florence-2 and the summary LLM each need RAM. Run the summarizer after the vision workers have finished, or use a smaller model (`LLM_MODEL=qwen2.5:1.5b`).
 - **YouTube downloads** need a JavaScript runtime (Deno 2+ or Node 20+) and `yt-dlp[default]`.
 - **Florence-2 pins**: `transformers==4.49.0`, `trust_remote_code`, eager attention, `use_cache=False`.
 
@@ -345,7 +421,7 @@ Failures land on the `pipeline.errors` topic (visible in Kafka UI) and as a `fai
 
 1. Bring up the local stack and create the topics.
 2. Define the message envelope and schemas in `src/vidpipe/schemas`.
-3. Run the downloader, audio, frame extractor and vision workers end to end and record a scaling benchmark (1 versus N vision workers).
+3. Run the downloader, audio, frame extractor, vision, chunk, timeline and summarizer workers end to end and record a scaling benchmark (1 versus N vision workers).
 4. Embedder (try one embedding model first) and the embeddings table.
 5. Search over chunks (semantic query returning video, timestamp and text).
 6. Terraform for the AWS GPU stack; Databricks storage and vector search.

@@ -63,3 +63,22 @@ def test_chunk_ready_is_keyed_by_chunk():
     msg = ChunkReady(video_id="v", run_id="r", chunk_id="c1", chunk_idx=0, chunk_version="w45-o10",
                      start_s=0, end_s=45, chunk_count=3)
     assert msg.partition_key() == "c1"
+
+
+def test_timeline_ready_is_keyed_by_video_and_roundtrips():
+    from vidpipe.schemas import TimelineReady, Topics
+
+    msg = TimelineReady(video_id="v", run_id="r", timeline_uri="s3://b/timeline/v/transcript.json",
+                        duration_s=60.2, audio_segment_count=12, visual_segment_count=9)
+    assert msg.partition_key() == "v"
+    assert TimelineReady.model_validate_json(msg.model_dump_json()) == msg
+    assert Topics.TIMELINE_READY == "timeline.ready"
+
+
+def test_summary_ready_roundtrips_and_is_keyed_by_video():
+    from vidpipe.schemas import SummaryReady, Topics
+
+    msg = SummaryReady(video_id="v", run_id="r", model="qwen2.5:3b", summary_chars=420)
+    assert msg.partition_key() == "v"
+    assert SummaryReady.model_validate_json(msg.model_dump_json()) == msg
+    assert Topics.SUMMARY_READY == "summary.ready"

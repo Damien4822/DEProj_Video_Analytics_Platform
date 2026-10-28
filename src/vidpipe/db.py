@@ -133,6 +133,19 @@ def get_progress(conn, video_id):
     ).fetchone()
 
 
+def is_complete(progress):
+    """Audio finished, keyframes extracted, and every keyframe described.
+
+    progress is a get_progress() row. Both builders (chunks, timeline) use this check."""
+    return bool(
+        progress
+        and progress["duration_s"] is not None
+        and progress["audio_segment_count"] is not None
+        and progress["keyframe_count"] is not None
+        and progress["frames_described"] >= progress["keyframe_count"]
+    )
+
+
 def load_timeline(conn, video_id):
     """Audio segments and visual segments (with derived end times and OCR text) in time order."""
     audio = conn.execute(
@@ -185,3 +198,78 @@ def replace_chunks(conn, video_id, chunk_version, chunks):
               c["speech"], c["scene"], c["on_screen"], c["text"]) for c in chunks],
         )
     return True
+
+
+def load_transcript_data(conn, video_id):
+    """Everything the transcript document needs: (video row, audio segments, visual segments).
+
+    Visual segments carry their derived end time, their objects and their OCR items."""
+    video = get_video(conn, video_id)
+    audio = conn.execute(
+        "SELECT segment_idx, start_s, end_s, text FROM audio_segments "
+        "WHERE video_id = %s ORDER BY segment_idx",
+        (video_id,),
+    ).fetchall()
+    visual = conn.execute(
+        """
+        SELECT t.frame_idx, t.start_s, t.end_s, t.caption,
+               COALESCE((SELECT json_agg(json_build_object(
+                             'label', o.label, 'bbox', json_build_array(o.x1, o.y1, o.x2, o.y2))
+                             ORDER BY o.obj_idx)
+                         FROM detected_objects o
+                         WHERE o.video_id = t.video_id AND o.frame_idx = t.frame_idx),
+                        '[]'::json) AS objects,
+               COALESCE((SELECT json_agg(json_build_object(
+                             'text', r.text, 'score', r.score,
+                             'bbox', json_build_array(r.x1, r.y1, r.x2, r.y2))
+                             ORDER BY r.item_idx)
+                         FROM ocr_items r
+                         WHERE r.video_id = t.video_id AND r.frame_idx = t.frame_idx),
+                        '[]'::json) AS ocr
+        FROM visual_segments_timed t
+        WHERE t.video_id = %s
+        ORDER BY t.frame_idx
+        """,
+        (video_id,),
+    ).fetchall()
+    return video, audio, visual
+
+
+def get_summary(conn, video_id):
+    return conn.execute("SELECT * FROM video_summaries WHERE video_id = %s", (video_id,)).fetchone()
+
+
+def upsert_summary(conn, video_id, summary, model, source_sha256):
+    conn.execute(
+        """
+        INSERT INTO video_summaries (video_id, summary, model, source_sha256)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT (video_id) DO UPDATE SET
+            summary        = EXCLUDED.summary,
+            model          = EXCLUDED.model,
+            source_sha256  = EXCLUDED.source_sha256,
+            updated_at     = now()
+        """,
+        (video_id, summary, model, source_sha256),
+    )
+
+
+def get_timeline(conn, video_id):
+    return conn.execute("SELECT * FROM video_timelines WHERE video_id = %s", (video_id,)).fetchone()
+
+
+def upsert_timeline(conn, video_id, timeline_uri, content_sha256, audio_count, visual_count):
+    conn.execute(
+        """
+        INSERT INTO video_timelines (video_id, timeline_uri, content_sha256,
+                                     audio_segment_count, visual_segment_count)
+        VALUES (%s, %s, %s, %s, %s)
+        ON CONFLICT (video_id) DO UPDATE SET
+            timeline_uri         = EXCLUDED.timeline_uri,
+            content_sha256       = EXCLUDED.content_sha256,
+            audio_segment_count  = EXCLUDED.audio_segment_count,
+            visual_segment_count = EXCLUDED.visual_segment_count,
+            updated_at           = now()
+        """,
+        (video_id, timeline_uri, content_sha256, audio_count, visual_count),
+    )

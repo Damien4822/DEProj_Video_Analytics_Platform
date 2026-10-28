@@ -47,6 +47,14 @@ class Settings:
     chunk_window_s: float = float(_env("CHUNK_WINDOW_S", "45"))
     chunk_overlap_s: float = float(_env("CHUNK_OVERLAP_S", "10"))
 
+    # Local LLM for the summary: any model served by Ollama (https://ollama.com).
+    # The context is small on purpose: this runs on a CPU VM with a few GB of free RAM.
+    llm_base_url: str = _env("LLM_BASE_URL", "http://localhost:11434")
+    llm_model: str = _env("LLM_MODEL", "qwen2.5:3b")
+    llm_num_ctx: int = int(_env("LLM_NUM_CTX", "4096"))
+    llm_timeout_s: float = float(_env("LLM_TIMEOUT_S", "900"))
+    summary_batch_chars: int = int(_env("SUMMARY_BATCH_CHARS", "8000"))   # notes per LLM call
+
     # Same selector as the Setup notebook: cap the height, not the length.
     ytdlp_format: str = _env("YTDLP_FORMAT", "bv*[height<=720]+ba/b[height<=720]/b")
     # Set to 1 on networks that re-sign HTTPS (use the system CA store instead of certifi).

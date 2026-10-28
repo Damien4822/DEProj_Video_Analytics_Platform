@@ -18,6 +18,8 @@ class Topics:
     FRAME_EXTRACTED = "frame.extracted"
     FRAME_DESCRIBED = "frame.described"
     CHUNK_READY = "chunk.ready"
+    TIMELINE_READY = "timeline.ready"
+    SUMMARY_READY = "summary.ready"
     PIPELINE_ERRORS = "pipeline.errors"
 
 
@@ -107,6 +109,22 @@ class ChunkReady(Message):
 
     def partition_key(self):
         return self.chunk_id
+
+
+class TimelineReady(Message):
+    """The whole-video transcript (speech, scenes, on-screen text on one timeline) is stored as JSON."""
+
+    timeline_uri: str
+    duration_s: float
+    audio_segment_count: int
+    visual_segment_count: int
+
+
+class SummaryReady(Message):
+    """The short summary of a video is stored in Postgres (video_summaries)."""
+
+    model: str
+    summary_chars: int
 
 
 class ErrorEvent(Message):

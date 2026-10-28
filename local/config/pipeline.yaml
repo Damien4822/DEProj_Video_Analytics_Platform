@@ -20,6 +20,8 @@ topics:
       partitions: 6
     chunk.ready: {}
     chunk.embedded: {}
+    timeline.ready: {}             # whole-video transcript JSON stored
+    summary.ready: {}              # short LLM summary stored
     pipeline.errors:
       partitions: 1
       retention_ms: 2592000000     # 30 days

@@ -169,3 +169,52 @@ def test_timeline_includes_ocr_text_and_derived_end_times(conn, video_id):
     audio, visual = db.load_timeline(conn, video_id)
     assert [(r["frame_idx"], r["end_s"], r["ocr"]) for r in visual] == [
         (0, 4.0, ["HELLO", "WORLD"]), (1, 10.0, [])]
+
+
+def test_transcript_data_carries_end_times_objects_and_ocr(conn, video_id):
+    db.upsert_video(conn, video_id, duration_s=10.0)
+    db.replace_audio_segments(conn, video_id, SEGMENTS, "small")
+    db.replace_visual_frame(conn, video_id, 0, 0.0, "s3://b/0.jpg", "first", "m", OBJECTS, OCR)
+    db.replace_visual_frame(conn, video_id, 1, 4.0, "s3://b/1.jpg", "second", "m", [], [])
+    video, audio, visual = db.load_transcript_data(conn, video_id)
+    assert video["duration_s"] == 10.0
+    assert [a["text"] for a in audio] == ["hello", "world"]
+    assert [(v["start_s"], v["end_s"]) for v in visual] == [(0.0, 4.0), (4.0, 10.0)]
+    assert [o["label"] for o in visual[0]["objects"]] == ["person", "cup"]
+    assert visual[0]["objects"][0]["bbox"] == [0, 0, 10, 20]
+    assert visual[0]["ocr"][0]["text"] == "HELLO"
+    assert visual[1]["objects"] == [] and visual[1]["ocr"] == []
+
+
+def test_upserting_a_timeline_twice_keeps_one_row(conn, video_id):
+    db.upsert_timeline(conn, video_id, "s3://b/t.json", "aa", 2, 1)
+    db.upsert_timeline(conn, video_id, "s3://b/t.json", "bb", 3, 2)
+    row = db.get_timeline(conn, video_id)
+    assert (row["content_sha256"], row["audio_segment_count"], row["visual_segment_count"]) == ("bb", 3, 2)
+    n = conn.execute("SELECT count(*) AS n FROM video_timelines WHERE video_id = %s", (video_id,)).fetchone()["n"]
+    assert n == 1
+
+
+def test_is_complete_needs_audio_keyframes_and_every_frame(conn, video_id):
+    assert not db.is_complete(db.get_progress(conn, video_id))
+    db.upsert_video(conn, video_id, duration_s=10.0, keyframe_count=2)
+    db.replace_visual_frame(conn, video_id, 0, 0.0, "s3://b/0.jpg", "a", "m", [], [])
+    assert not db.is_complete(db.get_progress(conn, video_id))          # no audio, one frame missing
+    db.upsert_video(conn, video_id, audio_segment_count=0)
+    assert not db.is_complete(db.get_progress(conn, video_id))          # one frame still missing
+    db.replace_visual_frame(conn, video_id, 1, 4.0, "s3://b/1.jpg", "b", "m", [], [])
+    assert db.is_complete(db.get_progress(conn, video_id))
+
+
+def test_upserting_a_summary_twice_keeps_one_row_with_the_latest(conn, video_id):
+    db.upsert_summary(conn, video_id, "first", "m1", "aa")
+    db.upsert_summary(conn, video_id, "second", "m2", "bb")
+    row = db.get_summary(conn, video_id)
+    assert (row["summary"], row["model"], row["source_sha256"]) == ("second", "m2", "bb")
+    n = conn.execute("SELECT count(*) AS n FROM video_summaries WHERE video_id = %s", (video_id,)).fetchone()["n"]
+    assert n == 1
+
+
+def test_database_rejects_an_empty_summary(conn, video_id):
+    with pytest.raises(psycopg.errors.CheckViolation):
+        db.upsert_summary(conn, video_id, "   ", "m", "aa")

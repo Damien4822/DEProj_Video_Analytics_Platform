@@ -37,6 +37,16 @@ def upload_file(path, key):
     return to_uri(key)
 
 
+def put_bytes(data, key, content_type="application/octet-stream"):
+    client().put_object(Bucket=cfg.s3_bucket, Key=key, Body=data, ContentType=content_type)
+    return to_uri(key)
+
+
+def get_bytes(uri):
+    bucket, key = parse_uri(uri)
+    return client().get_object(Bucket=bucket, Key=key)["Body"].read()
+
+
 def download_file(uri, dest):
     bucket, key = parse_uri(uri)
     dest = Path(dest)

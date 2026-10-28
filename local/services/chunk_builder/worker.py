@@ -24,23 +24,12 @@ STAGE = "chunks"
 log = logging.getLogger(__name__)
 
 
-def is_complete(progress):
-    """Audio finished, keyframes extracted, and every keyframe described."""
-    return bool(
-        progress
-        and progress["duration_s"] is not None
-        and progress["audio_segment_count"] is not None
-        and progress["keyframe_count"] is not None
-        and progress["frames_described"] >= progress["keyframe_count"]
-    )
-
-
 def handle(msg):
     version = chunk_version_for(cfg.chunk_window_s, cfg.chunk_overlap_s)
     with db.connect() as conn:
         db.lock_video(conn, msg.video_id)   # concurrent builders for one video take turns
         progress = db.get_progress(conn, msg.video_id)
-        if not is_complete(progress):
+        if not db.is_complete(progress):
             log.debug("video %s not complete yet", msg.video_id)
             return None
 

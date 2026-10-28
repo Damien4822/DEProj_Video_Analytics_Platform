@@ -7,7 +7,7 @@ screen. The combined text is what gets embedded later. This module is pure: no I
 from vidpipe.schemas.ids import chunk_id_for, chunk_version_for
 
 
-def _overlaps(start, end, w_start, w_end):
+def overlaps(start, end, w_start, w_end):
     """Does [start, end) touch the window [w_start, w_end)? Zero-length items count if inside."""
     if end <= start:
         return w_start <= start < w_end
@@ -57,10 +57,10 @@ def build_chunks(video_id, duration_s, audio, visual, window_s, overlap_s):
 
         speech = " ".join(
             a["text"].strip() for a in audio
-            if a["text"].strip() and _overlaps(a["start_s"], a["end_s"], w_start, w_end)
+            if a["text"].strip() and overlaps(a["start_s"], a["end_s"], w_start, w_end)
         )
         in_window = [v for v in visual
-                     if v["end_s"] is not None and _overlaps(v["start_s"], v["end_s"], w_start, w_end)]
+                     if v["end_s"] is not None and overlaps(v["start_s"], v["end_s"], w_start, w_end)]
         scene = " ".join(_unique_in_order(
             [v["caption"].strip() for v in in_window if v.get("caption") and v["caption"].strip()]))
         on_screen = " | ".join(_unique_in_order(
