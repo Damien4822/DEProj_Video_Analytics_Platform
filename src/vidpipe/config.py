@@ -56,7 +56,7 @@ class Settings:
     summary_batch_chars: int = int(_env("SUMMARY_BATCH_CHARS", "8000"))   # notes per LLM call
 
     # Same selector as the Setup notebook: cap the height, not the length.
-    ytdlp_format: str = _env("YTDLP_FORMAT", "bv*[height<=720]+ba/b[height<=720]/b")
+    ytdlp_format: str = _env("YTDLP_FORMAT", "bv*[height<=720][vcodec!^=av01]+ba/b[height<=720][vcodec!^=av01]/b[vcodec!^=av01]/b")
     # Set to 1 on networks that re-sign HTTPS (use the system CA store instead of certifi).
     ytdlp_no_certifi: bool = _env("YTDLP_NO_CERTIFI", "0") == "1"
 
