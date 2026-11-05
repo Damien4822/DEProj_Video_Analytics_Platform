@@ -19,7 +19,7 @@ clouds/databricks/
 │   └── outputs.tf             the schema name and the /Volumes/... paths for notebooks
 ├── notebooks/                 processing code, run on Databricks (pulled in through a Git folder)
 │   ├── 00_smoke_test.py       checks what the compute allows: packages, CPU/RAM, repo import, network
-│   ├── 01_extract_keyframes.py  optional URL download, then keyframes -> `videos` and `frames` tables
+│   ├── 01_extract_keyframes.py  keyframes from the videos in `raw` -> `videos` and `frames` tables
 │   └── 02_transcribe_and_describe.py  Whisper + Florence-2 + OCR -> audio, visual, object and OCR tables
 └── scripts/                   helpers that run on your own machine
     └── upload_video.py        download a video with yt-dlp, upload it to the `raw` volume, delete the local copy
