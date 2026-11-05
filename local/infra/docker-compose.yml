@@ -180,6 +180,18 @@ services:
     image: vidpipe-light
     command: python -m services.timeline_builder.worker
 
+  embedder:
+    <<: *worker
+    build: { context: ../.., dockerfile: local/Dockerfile, target: embed }
+    image: vidpipe-embed
+    command: python -m services.embedder.worker
+    environment:
+      <<: *worker-env
+      HF_HOME: /models/hf
+      EMBED_MODEL: ${EMBED_MODEL:-BAAI/bge-small-en-v1.5}
+    volumes:
+      - models:/models
+
   # Needs Ollama on the host, listening on all interfaces: OLLAMA_HOST=0.0.0.0 ollama serve
   summarizer:
     <<: *worker

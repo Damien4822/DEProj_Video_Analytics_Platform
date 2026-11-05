@@ -200,6 +200,67 @@ def replace_chunks(conn, video_id, chunk_version, chunks):
     return True
 
 
+def vector_literal(values):
+    """A pgvector text literal such as '[0.1,0.2]', cast with ::vector in the SQL (no driver adapter needed)."""
+    return "[" + ",".join(format(float(v), ".8g") for v in values) + "]"
+
+
+def get_chunk(conn, chunk_id):
+    return conn.execute(
+        "SELECT chunk_id, video_id, chunk_idx, text FROM chunks WHERE chunk_id = %s", (chunk_id,),
+    ).fetchone()
+
+
+def get_embedding_dim(conn, chunk_id, model):
+    """Size of the stored vector, or None when the chunk has no embedding from this model."""
+    row = conn.execute(
+        "SELECT dim FROM chunk_embeddings WHERE chunk_id = %s AND model = %s", (chunk_id, model),
+    ).fetchone()
+    return row["dim"] if row else None
+
+
+def upsert_embedding(conn, chunk_id, model, embedding):
+    """Store one chunk's vector for one model. Re-embedding the same chunk overwrites it."""
+    conn.execute(
+        """
+        INSERT INTO chunk_embeddings (chunk_id, model, dim, embedding)
+        VALUES (%s, %s, %s, %s::vector)
+        ON CONFLICT (chunk_id, model) DO UPDATE SET
+            dim        = EXCLUDED.dim,
+            embedding  = EXCLUDED.embedding,
+            created_at = now()
+        """,
+        (chunk_id, model, len(embedding), vector_literal(embedding)),
+    )
+
+
+def search_chunks(conn, query_embedding, model, *, limit=5, video_id=None):
+    """Nearest chunks by cosine similarity, best first, each with a score in [-1, 1].
+
+    The query vector must come from the same model. The cast and the model filter match the
+    HNSW index in 006_embeddings.sql, so the index is used when it exists.
+    """
+    dim = int(len(query_embedding))   # a cast needs a literal size, not a bind parameter
+    params = {"q": vector_literal(query_embedding), "model": model, "limit": limit}
+    video_filter = ""
+    if video_id:
+        video_filter = "AND c.video_id = %(video)s"
+        params["video"] = video_id
+    return conn.execute(
+        f"""
+        SELECT c.video_id, v.title, c.chunk_idx, c.start_s, c.end_s, c.text,
+               1 - (e.embedding::vector({dim}) <=> %(q)s::vector({dim})) AS score
+        FROM chunk_embeddings e
+        JOIN chunks c ON c.chunk_id = e.chunk_id
+        JOIN videos v ON v.video_id = c.video_id
+        WHERE e.model = %(model)s AND e.dim = {dim} {video_filter}
+        ORDER BY e.embedding::vector({dim}) <=> %(q)s::vector({dim})
+        LIMIT %(limit)s
+        """,
+        params,
+    ).fetchall()
+
+
 def load_transcript_data(conn, video_id):
     """Everything the transcript document needs: (video row, audio segments, visual segments).
 

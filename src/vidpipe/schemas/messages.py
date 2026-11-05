@@ -18,6 +18,7 @@ class Topics:
     FRAME_EXTRACTED = "frame.extracted"
     FRAME_DESCRIBED = "frame.described"
     CHUNK_READY = "chunk.ready"
+    CHUNK_EMBEDDED = "chunk.embedded"
     TIMELINE_READY = "timeline.ready"
     SUMMARY_READY = "summary.ready"
     PIPELINE_ERRORS = "pipeline.errors"
@@ -106,6 +107,20 @@ class ChunkReady(Message):
     start_s: float
     end_s: float
     chunk_count: int
+
+    def partition_key(self):
+        return self.chunk_id
+
+
+class ChunkEmbedded(Message):
+    """The embedding of one chunk is stored in Postgres (chunk_embeddings)."""
+
+    chunk_id: str
+    chunk_idx: int
+    chunk_version: str
+    chunk_count: int
+    model: str                           # embedding model that produced the vector
+    dim: int
 
     def partition_key(self):
         return self.chunk_id

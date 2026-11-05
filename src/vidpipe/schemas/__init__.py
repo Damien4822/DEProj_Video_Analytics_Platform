@@ -8,6 +8,7 @@ from vidpipe.schemas.ids import (
 from vidpipe.schemas.messages import (
     SCHEMA_VERSION,
     AudioDone,
+    ChunkEmbedded,
     ChunkReady,
     ErrorEvent,
     FrameDescribed,
@@ -23,6 +24,7 @@ from vidpipe.schemas.messages import (
 __all__ = [
     "SCHEMA_VERSION",
     "AudioDone",
+    "ChunkEmbedded",
     "ChunkReady",
     "ErrorEvent",
     "FrameDescribed",

@@ -49,8 +49,8 @@ Design choice: everything is **CPU-friendly and lightweight** so it runs on a la
 | Chunk builder (time-window chunks of speech, scene and on-screen text) | Written, tests pass; not yet run end to end |
 | Timeline builder (whole-video transcript JSON, same shape as the notebook output) | Written, tests pass; not yet run end to end |
 | Summarizer (local LLM through Ollama: short summary with key moments, from the transcript) | Written, tests pass with a fake LLM; not yet run with a real model |
-| Embedder | Folder skeleton only |
-| Postgres schema | DDL written for `videos`, `processing_runs`, audio, visual, chunk and timeline tables (with views for segment end times and per-video progress); embeddings designed |
+| Embedder (sentence-transformers, default `BAAI/bge-small-en-v1.5`: one vector per chunk in pgvector) and the `scripts/search.py` semantic search | Written; unit tests pass, the database tests and the SQL have not been run against pgvector yet; not run end to end |
+| Postgres schema | DDL written for `videos`, `processing_runs`, audio, visual, chunk, timeline and embedding tables (with views for segment end times and per-video progress) |
 | Cloud (AWS / Databricks) | Planned, nothing built |
 
 The notebooks are the proof of the extraction logic. The Kafka services are the next step: moving the same logic into independent, scalable workers.
@@ -159,12 +159,12 @@ A local LLM served by [Ollama](https://ollama.com) (default `qwen2.5:3b`, a size
 - **Completion is read from the database, not held in a worker.** The extractor stores `keyframe_count`, the audio worker stores `audio_segment_count`, and the builders compare them with what has arrived. The builders keep no state, so they can be restarted or run twice.
 - **Out-of-order tolerant**: parallel workers finish in any order. Workers emit only a `start_s`; the aggregator derives each segment's end from the next start.
 - **Dead-letter topic** (`pipeline.errors`) with an envelope that records the failed stage, original message and error, so failures are inspectable and replayable.
-- **Swappable models**: transcription, vision and embedding models sit behind small interfaces (planned in `src/vidpipe`), and the embedding model name is stored with each vector.
+- **Swappable models**: transcription, vision and embedding models sit behind small interfaces (`src/vidpipe/models`), and the embedding model name is stored with each vector, so vectors of several models can sit side by side and the model can change without a migration.
 - **`max.poll.records=1`** for the heavy workers so one slow frame does not hold back a large batch.
 
 ## Data model
 
-Planned Postgres schema. Vectors live in their own table so the embedding model can change without touching the metadata.
+Postgres schema (`local/sql`). Vectors live in their own table so the embedding model can change without touching the metadata. In `chunk_embeddings` the key is `(chunk_id, model)` and the vector column has no fixed size; an HNSW index on a cast covers one model (the default one), and searches work without an index too.
 
 ```mermaid
 erDiagram
@@ -317,11 +317,13 @@ flowchart LR
     ├── scripts/submit_video.py  # entry point: publish a URL or file to video.requested
     ├── scripts/apply_sql.py     # apply sql/*.sql to an existing database
     ├── scripts/init_storage.py  # idempotent bucket creation
-    ├── services/                # one folder per worker (the embedder is still a skeleton)
+    ├── scripts/search.py        # semantic search over the embedded chunks
+    ├── scripts/check_models.py  # check (and optionally download) the models the pipeline needs
+    ├── services/                # one folder per worker 
     │   ├── downloader/  audio_worker/  frame_extractor/
     │   ├── vision_worker/  chunk_builder/  timeline_builder/
     │   ├── summarizer/
-    │   └── embedder/
+    │   └── embedder/            # chunk.ready -> vector in pgvector -> chunk.embedded
     ├── sql/                     # schema DDL, run on first Postgres start
     ├── tests/                   # unit tests and DB idempotency tests
     ├── demo/                    # the notebook experiments
@@ -346,7 +348,28 @@ source .env/bin/activate
 pip install -r requirements.txt
 ```
 
-Then open `local/demo/Setup.ipynb` to download sample media, and run the notebooks under `local/demo/`. The first run downloads the Whisper and Florence-2 models.
+Then open `local/demo/Setup.ipynb` to download sample media, and run the notebooks under `local/demo/`. The first run downloads the Whisper and Florence-2 models (see Models below to check or fetch them first).
+
+### Models
+
+The pipeline uses these models. All run on the CPU and stay on your machine once downloaded. Sizes are approximate.
+
+| Model | Used by | Setting | Size | Where it lives | How it gets there |
+|---|---|---|---|---|---|
+| `Systran/faster-whisper-small` | audio worker | `WHISPER_MODEL` | ~490 MB | Hugging Face cache | downloaded on first use |
+| `microsoft/Florence-2-base` | vision worker | `VISION_MODEL` | ~470 MB | Hugging Face cache | downloaded on first use |
+| `BAAI/bge-small-en-v1.5` | embedder, `scripts/search.py` | `EMBED_MODEL` | ~130 MB | Hugging Face cache | downloaded on first use |
+| `qwen2.5:3b` | summarizer | `LLM_MODEL` | ~2 GB | Ollama | `ollama pull qwen2.5:3b` |
+| RapidOCR | vision worker | - | small | inside the pip package | nothing to download |
+
+The Hugging Face cache is `~/.cache/huggingface` (or `HF_HOME`; in containers it is the `models` volume). Confirm what is there, from `local/`, before the first run:
+
+```bash
+python scripts/check_models.py              # report only: ok / MISSING for each model, exit code 1 if any is missing
+python scripts/check_models.py --download   # fetch the missing Hugging Face models now (Ollama's model: ollama pull)
+```
+
+Downloading ahead of time avoids a long first run and shows network or certificate problems early. Behind a company proxy that re-signs HTTPS, load the CA paths first (`set -a; source ssl.env; set +a`, see `ssl.env.example`). After everything is downloaded you can set `HF_HUB_OFFLINE=1` so the workers never touch the network. In containers, check the `models` volume with `docker compose --profile workers run --rm embedder python scripts/check_models.py`.
 
 Local infrastructure:
 
@@ -381,10 +404,11 @@ python -m services.vision_worker.worker     # terminal 4 (start more copies to g
 python -m services.chunk_builder.worker     # terminal 5 (chunks, for search)
 python -m services.timeline_builder.worker  # terminal 6 (whole-video transcript JSON)
 python -m services.summarizer.worker        # terminal 7 (short summary; needs Ollama running)
+python -m services.embedder.worker          # terminal 8 (one vector per chunk, for search)
 
 python scripts/create_topics.py             # again, if the stack was created before timeline.ready existed
 
-python scripts/submit_video.py "<video url>"            # terminal 8: submit a URL
+python scripts/submit_video.py "<video url>"            # terminal 9: submit a URL
 python scripts/submit_video.py --file path/to/video.mp4  # or a local file
 ```
 
@@ -404,7 +428,7 @@ python scripts/submit_video.py "<video url>"          # from local/, on the host
 ```
 
 - A one-shot `init` service creates the topics and bucket and applies the SQL before any worker starts.
-- Three images are built from `local/Dockerfile`: `light` (builders, summarizer), `media` (downloader, frame extractor, audio worker) and `vision` (CPU). The Whisper and Florence-2 models are downloaded on first use into the `models` volume, so a restart does not download them again.
+- Four images are built from `local/Dockerfile`: `light` (builders, summarizer), `media` (downloader, frame extractor, audio worker), `vision` (CPU) and `embed` (the embedder and the search script). The Whisper, Florence-2 and embedding models are downloaded on first use into the `models` volume, so a restart does not download them again.
 - The summarizer reaches Ollama on the host, which must listen on all interfaces: `OLLAMA_HOST=0.0.0.0 ollama serve`.
 - On a network that re-signs HTTPS, copy the company CA certificate (a `.crt` file) into `local/ca/` before building (it is git-ignored), and set `YTDLP_NO_CERTIFI=1` in `local/infra/.env`.
 
@@ -428,6 +452,21 @@ SELECT model, summary FROM video_summaries WHERE video_id = '<video_id>';
 SELECT chunk_idx, start_s, end_s, text FROM chunks WHERE video_id = '<video_id>' ORDER BY chunk_idx;
 ```
 
+Embeddings and semantic search (needs the embedder worker running; the first chunk loads the model, about 130 MB for the default):
+
+```sql
+SELECT model, dim, count(*) FROM chunk_embeddings GROUP BY model, dim;   -- one row per model; count = chunks embedded
+SELECT chunks, (SELECT count(*) FROM chunk_embeddings e JOIN chunks c USING (chunk_id) WHERE c.video_id = p.video_id) AS embedded
+FROM video_progress p WHERE video_id = '<video_id>';                     -- the two numbers should become equal
+```
+
+```bash
+python scripts/search.py "what is said about stress at work"        # from local/: nearest chunks, with timestamps
+python scripts/search.py "stress" --video <video_id> --limit 10
+```
+
+The query is embedded with the same model as the chunks (`EMBED_MODEL`). Changing `EMBED_MODEL` leaves the old vectors in place and embeds new chunks with the new model; to embed existing videos again, rebuild their chunks or resubmit them. With containers: `docker compose --profile workers run --rm embedder python scripts/search.py "your query"`.
+
 Failures land on the `pipeline.errors` topic (visible in Kafka UI) and as a `failed` row in `processing_runs`. Tests: `pytest` from `local/` (the database tests are skipped when Postgres is not running).
 
 ## Known constraints
@@ -442,6 +481,6 @@ Failures land on the `pipeline.errors` topic (visible in Kafka UI) and as a `fai
 1. Bring up the local stack and create the topics.
 2. Define the message envelope and schemas in `src/vidpipe/schemas`.
 3. Run the downloader, audio, frame extractor, vision, chunk, timeline and summarizer workers end to end and record a scaling benchmark (1 versus N vision workers).
-4. Embedder (try one embedding model first) and the embeddings table.
-5. Search over chunks (semantic query returning video, timestamp and text).
+4. ~~Embedder and the embeddings table~~ written; run it end to end and compare embedding models (bge-small versus bge-m3).
+5. ~~Search over chunks~~ `scripts/search.py` written; judge the result quality on real videos.
 6. Terraform for the AWS GPU stack; Databricks storage and vector search.

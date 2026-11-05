@@ -20,6 +20,9 @@ rapidocr-onnxruntime
 # Video download ([default] adds the extras YouTube needs; keep yt-dlp up to date)
 yt-dlp[default]
 
+# Embeddings of the chunks (pgvector search)
+sentence-transformers
+
 # Kafka pipeline
 confluent-kafka
 pyyaml

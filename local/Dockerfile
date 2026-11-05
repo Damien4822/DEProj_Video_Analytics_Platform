@@ -4,6 +4,7 @@
 #   light   builders, summarizer and the setup scripts     (no ML libraries)
 #   media   downloader, frame extractor, audio worker      (ffmpeg, yt-dlp, OpenCV, faster-whisper)
 #   vision  vision worker, CPU                             (torch, transformers, Florence-2, RapidOCR)
+#   embed   embedder worker and the search script, CPU     (torch, sentence-transformers)
 #
 # Package lists mirror local/requirements.txt (transformers stays pinned to the same version).
 # Python 3.10 on purpose: the release-candidate 3.11 breaks transformers.
@@ -33,6 +34,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends libgl1 libglib2
 RUN pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 RUN pip install transformers==4.49.0 einops timm pillow numpy rapidocr-onnxruntime
 
+FROM base AS embed-deps
+RUN pip install torch --index-url https://download.pytorch.org/whl/cpu
+RUN pip install sentence-transformers numpy
+
 # The code goes in last, so editing it does not rebuild the package layers above.
 FROM scratch AS code
 COPY pyproject.toml /app/pyproject.toml
@@ -53,6 +58,11 @@ RUN pip install --no-deps /app
 WORKDIR /app/local
 
 FROM vision-deps AS vision
+COPY --from=code /app /app
+RUN pip install --no-deps /app
+WORKDIR /app/local
+
+FROM embed-deps AS embed
 COPY --from=code /app /app
 RUN pip install --no-deps /app
 WORKDIR /app/local

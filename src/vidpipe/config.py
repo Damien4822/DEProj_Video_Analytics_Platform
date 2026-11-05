@@ -47,6 +47,12 @@ class Settings:
     chunk_window_s: float = float(_env("CHUNK_WINDOW_S", "45"))
     chunk_overlap_s: float = float(_env("CHUNK_OVERLAP_S", "10"))
 
+    # Embeddings of the chunks. The model decides the vector size; vectors of different models live
+    # side by side in chunk_embeddings, so changing EMBED_MODEL does not need a migration.
+    embed_model: str = _env("EMBED_MODEL", "BAAI/bge-small-en-v1.5")
+    embed_device: str = _env("EMBED_DEVICE", "cpu")
+    embed_batch_size: int = int(_env("EMBED_BATCH_SIZE", "16"))
+
     # Local LLM for the summary: any model served by Ollama (https://ollama.com).
     # The context is small on purpose: this runs on a CPU VM with a few GB of free RAM.
     llm_base_url: str = _env("LLM_BASE_URL", "http://localhost:11434")
