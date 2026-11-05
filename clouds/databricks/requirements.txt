@@ -1,0 +1,7 @@
+# Dependencies of the scripts in scripts/ (run on your own machine, not on Databricks).
+# The notebooks install their own pinned packages in their %pip cells.
+# scripts/upload_video.py also needs ffmpeg on the PATH (yt-dlp uses it to merge video and audio).
+
+yt-dlp[default]
+requests
+python-dotenv

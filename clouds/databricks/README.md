@@ -1,30 +1,58 @@
 # Databricks stack
 
-Terraform for the Databricks workspace objects of the lakehouse/batch variant of the pipeline. It targets **Databricks Free Edition**: serverless compute only (no custom clusters, no GPU), one workspace, no account-level API, and outbound internet limited to a short list of domains.
+Terraform, notebooks and a helper script for the Databricks (lakehouse/batch) variant of the pipeline. It targets **Databricks Free Edition**: serverless compute only (no custom clusters; the serverless GPU option on this account is a single A10), one workspace, no account-level API, and outbound internet limited to a list of trusted domains.
 
-Terraform only declares objects (schema, volumes, later notebooks and a job). The processing code runs in notebooks on Databricks compute.
+Division of labour: **Terraform declares the objects** (schema, volumes; later a job), **notebooks hold the processing code** and run on Databricks compute, and **local scripts** do what must happen on your own machine.
 
-## What it creates
+## Folder layout
+
+```
+clouds/databricks/
+├── README.md                  this file
+├── databricks.env.example     template for the credentials (copy to databricks.env, gitignored)
+├── requirements.txt           Python packages for the scripts in scripts/ (not for the notebooks)
+├── terraform/                 infrastructure as code, run from your machine
+│   ├── versions.tf            Terraform and provider version pins
+│   ├── provider.tf            empty provider block; host and token come from the environment
+│   ├── variables.tf           inputs: catalog_name (required), schema_name, workspace_name, volumes
+│   ├── main.tf                the schema and the volumes
+│   └── outputs.tf             the schema name and the /Volumes/... paths for notebooks
+├── notebooks/                 processing code, run on Databricks (pulled in through a Git folder)
+│   ├── 00_smoke_test.py       checks what the compute allows: packages, CPU/RAM, repo import, network
+│   ├── 01_extract_keyframes.py  optional URL download, then keyframes -> `videos` and `frames` tables
+│   └── 02_transcribe_and_describe.py  Whisper + Florence-2 + OCR -> audio, visual, object and OCR tables
+└── scripts/                   helpers that run on your own machine
+    └── upload_video.py        download a video with yt-dlp, upload it to the `raw` volume, delete the local copy
+```
+
+| Folder | What lives there | Where it runs |
+|---|---|---|
+| `terraform/` | Declarations of what must exist in the workspace. Creating, changing and destroying objects. Never processes data. | Your machine, calling the workspace API |
+| `notebooks/` | The pipeline stages, reusing `src/vidpipe` (keyframes, quality checks, `FrameDescriber`). Written as plain `.py` files in Databricks source format so they diff in git. | Databricks serverless compute |
+| `scripts/` | Work that cannot run on Databricks, such as downloading from YouTube (cloud IPs are often challenged). | Your machine |
+
+## What Terraform creates
 
 | Resource | Purpose |
 |---|---|
 | Schema `vidpipe` (in your catalog) | Holds the pipeline's tables and volumes |
-| Volumes `raw`, `models`, `frames` | Videos, model weights, keyframe images |
+| Volumes `raw`, `models`, `frames` | Videos, model weights and the Hugging Face cache, keyframe images |
 
-Files in `terraform/`: `versions.tf` (provider pin), `provider.tf` (empty block, auth comes from the environment), `variables.tf`, `main.tf`, `outputs.tf`.
+The notebooks create the Delta tables themselves: `videos`, `frames`, `audio_segments`, `visual_segments`, `detected_objects`, `ocr_items`.
 
 ## Requirements
 
-- A Databricks Free Edition workspace, with a **catalog** already created (Terraform creates the schema inside it, not the catalog).
+- A Databricks Free Edition workspace with a **catalog** already created (Terraform creates the schema inside it, not the catalog).
 - A **personal access token**: user menu > Settings > Developer > Access tokens > Generate new token. Use a short lifetime and copy it once.
-- **Terraform >= 1.5** installed (`terraform -version`).
-- Network access from the machine running Terraform to `https://<workspace>.cloud.databricks.com`, and to the Terraform registry for `terraform init`.
+- **Terraform >= 1.5** (`terraform -version`).
+- Network access from your machine to `https://<workspace>.cloud.databricks.com` and to the Terraform registry.
+- For the scripts: `pip install -r requirements.txt`, and `ffmpeg` on the PATH.
 
 ## Setup
 
 ```bash
-cd clouds/databricks
-cp databricks.env.example databricks.env     # gitignored; fill in the values
+cp clouds/databricks/databricks.env.example clouds/databricks/databricks.env    # then fill it in
+source clouds/use.sh databricks                                                  # from the repo root
 ```
 
 | Variable | Required | Meaning |
@@ -35,16 +63,13 @@ cp databricks.env.example databricks.env     # gitignored; fill in the values
 | `TF_VAR_schema_name` | no | Defaults to `vidpipe` |
 | `TF_VAR_workspace_name` | no | Label used only in the schema comment |
 
-Never commit `databricks.env`, tokens or `*.tfvars`. `clouds/.gitignore` covers them.
+Never commit `databricks.env`, tokens or `*.tfvars`.
 
 ## Step 1: test the connection
 
-Do this before running Terraform. It separates network and token problems from Terraform problems.
+Do this before Terraform. It separates network and token problems from Terraform problems. Run it in the shell where you sourced the credentials.
 
 ```bash
-cd clouds/databricks
-set -a; source databricks.env; set +a        # `set -a` exports the variables to child processes
-
 # Is the workspace reachable? Any HTTP response (a 404 is normal) means yes.
 curl -sSI -m 15 "$DATABRICKS_HOST" | head -1
 
@@ -63,10 +88,8 @@ curl -s -o /dev/null -w "API status: %{http_code}\n" \
 
 ## Step 2: plan and apply
 
-Run in the same shell as step 1, so the variables are loaded.
-
 ```bash
-cd terraform
+cd clouds/databricks/terraform
 terraform init       # downloads the databricks provider
 terraform plan       # shows what would be created; changes nothing
 terraform apply      # creates the schema and volumes
@@ -74,21 +97,40 @@ terraform output     # prints the /Volumes/... paths for notebooks
 ```
 
 If `plan` reports an authentication error that points to the OAuth page, the provider found no usable token. Check, in order:
-1. The variables are exported in this shell (`echo "${DATABRICKS_TOKEN:+set}"`), not only sourced.
+1. The credentials are loaded in this shell (`echo "${DATABRICKS_TOKEN:+set}"`), using `source clouds/use.sh databricks`, in the same terminal.
 2. Step 1 returned `200` for the token.
 3. No `DATABRICKS_CONFIG_PROFILE`, `DATABRICKS_AUTH_TYPE` or `~/.databrickscfg` is overriding the token.
 4. The env file has no quotes, trailing spaces or Windows line endings.
 
-To remove everything Terraform created: `terraform destroy`.
+`terraform destroy` removes everything Terraform created, including the volumes and the files in them. Terraform state is local (gitignored), so run it from the machine where you applied.
+
+## Step 3: get a video into the `raw` volume
+
+Either upload an mp4 by hand in the Catalog view, or use the helper, which downloads on your machine and uploads through the Files API (the local copy is deleted once the remote size matches):
+
+```bash
+pip install -r clouds/databricks/requirements.txt
+python clouds/databricks/scripts/upload_video.py "<video url>"      # after `source clouds/use.sh databricks`
+```
+
+## Step 4: run the notebooks
+
+1. Create a **Git folder** in the workspace that clones this repo, so notebooks can import `src/vidpipe`. After each push, press Pull.
+2. Open `notebooks/00_smoke_test`, attach serverless compute, fill in the `catalog` widget and run it.
+3. Run `01_extract_keyframes`, then `02_transcribe_and_describe` (attach serverless **GPU** for 02, or set its `device` widget to `cpu`).
+4. Each notebook installs its own pinned packages in its first `%pip` cell. If a version error appears, fix only the versions and copy the working pins back into the repo. Notebook 02 prints the versions that worked in its last cell.
+
+The CPU compute seen here had 4 CPUs and about 6 GB of free RAM. Notebook 02 prints seconds of compute per minute of video, for the scaling notes.
 
 ## Free Edition notes
 
-- Terraform support on Free Edition has not been confirmed in the official docs. This stack is the test: if `plan` or `apply` fails on a specific resource, note which one here.
-- Terraform runs on your machine and only calls the workspace API. Databricks Asset Bundles run Terraform on Databricks itself, and reports suggest the outbound domain restriction blocks that.
+- Terraform works on Free Edition from your own machine (apply and destroy tested). Databricks Asset Bundles run Terraform on Databricks itself, and reports suggest the outbound domain restriction blocks that; not tested here.
 - Account-level resources (creating workspaces, users, metastores) are not available.
+- Compute and GPU use is quota-limited. When a quota is exceeded the compute goes offline until it resets; data and settings stay.
+- Databricks compute IPs may be challenged by YouTube. Use `scripts/upload_video.py` instead of downloading in a notebook.
 
 ## Next
 
-1. Upload a short H.264 mp4 and the model weights to the volumes by hand.
-2. Notebooks for keyframe extraction, Whisper and Florence, and chunking.
-3. A serverless job that runs them in order, defined in `jobs.tf`.
+1. Notebook `03` to build the chunks, reusing `vidpipe.chunking`.
+2. The embedder (bge-m3 fits on the A10) and a Delta table for the vectors.
+3. `jobs.tf`: a serverless job that runs the notebooks in order.
