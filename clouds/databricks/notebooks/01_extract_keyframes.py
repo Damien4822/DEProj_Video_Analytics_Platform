@@ -5,10 +5,13 @@
 # MAGIC in the `frames` volume plus rows in the `videos` and `frames` Delta tables, using the same `iter_keyframes`
 # MAGIC code as the Kafka pipeline. Videos are processed one at a time (the compute has ~6 GB free).
 # MAGIC Safe to re-run: a video's old frames and rows are replaced.
+# MAGIC
+# MAGIC Optional first step: put a video URL in the `video_url` widget and it is downloaded into `raw` (the
+# MAGIC `downloader` worker's job locally). Leave it empty to use the videos already in `raw`.
 
 # COMMAND ----------
 
-# MAGIC %pip install opencv-python-headless numpy
+# MAGIC %pip install opencv-python-headless==4.12.0.88 numpy yt-dlp[default] imageio-ffmpeg python-dotenv
 
 # COMMAND ----------
 
@@ -18,8 +21,10 @@ dbutils.library.restartPython()
 
 dbutils.widgets.text("catalog", "", "Catalog name")
 dbutils.widgets.text("schema", "vidpipe", "Schema name")
+dbutils.widgets.text("video_url", "", "Video URL to download into raw (optional)")
 catalog = dbutils.widgets.get("catalog")
 schema = dbutils.widgets.get("schema")
+video_url = dbutils.widgets.get("video_url").strip()
 assert catalog, "fill in the catalog widget at the top of the notebook"
 
 SAMPLE_FPS = 1.0       # same defaults as SAMPLE_FPS / DIFF_THRESHOLD in vidpipe.config
@@ -32,17 +37,42 @@ frames_table = f"{catalog}.{schema}.frames"
 
 # COMMAND ----------
 
+# Download a video into the raw volume (skipped when the widget is empty).
+# yt-dlp needs ffmpeg to merge the video and audio streams; imageio-ffmpeg ships a binary for it.
+import sys
+from pathlib import Path
+
+repo_root = next(p for p in [Path.cwd(), *Path.cwd().parents] if (p / "src" / "vidpipe").is_dir())
+sys.path.insert(0, str(repo_root / "src"))
+
+if video_url:
+    import imageio_ffmpeg
+    import yt_dlp
+    from vidpipe.config import cfg
+
+    options = {
+        "format": cfg.ytdlp_format,   # same selector as the local downloader (no AV1, up to 720p)
+        "outtmpl": f"{raw_dir}/%(id)s.%(ext)s",
+        "ffmpeg_location": imageio_ffmpeg.get_ffmpeg_exe(),
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+    }
+    with yt_dlp.YoutubeDL(options) as ydl:
+        info = ydl.extract_info(video_url, download=True)
+    print("downloaded:", info.get("title"), "->", ydl.prepare_filename(info))
+else:
+    print("video_url is empty: using the videos already in", raw_dir)
+
+# COMMAND ----------
+
 import os
 import shutil
-import sys
 import uuid
-from pathlib import Path
 
 import cv2
 from pyspark.sql import Row
 
-repo_root = next(p for p in [Path.cwd(), *Path.cwd().parents] if (p / "src" / "vidpipe").is_dir())
-sys.path.insert(0, str(repo_root / "src"))
 from vidpipe.keyframes import iter_keyframes  # noqa: E402
 
 

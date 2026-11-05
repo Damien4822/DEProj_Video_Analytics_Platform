@@ -6,7 +6,7 @@
 
 # COMMAND ----------
 
-# MAGIC %pip install opencv-python-headless numpy
+# MAGIC %pip install opencv-python-headless==4.12.0.88 numpy
 
 # COMMAND ----------
 
