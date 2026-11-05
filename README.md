@@ -388,6 +388,26 @@ python scripts/submit_video.py "<video url>"            # terminal 8: submit a U
 python scripts/submit_video.py --file path/to/video.mp4  # or a local file
 ```
 
+### Or run the workers in containers
+
+The same workers can run as containers instead of one terminal each. The infrastructure still starts as before; the workers are behind a compose profile:
+
+```bash
+cd local/infra
+cp .env.example .env                                  # once
+docker compose --profile workers up -d --build        # infra + setup job + all workers
+docker compose --profile workers up -d --scale vision-worker=3   # more vision workers
+docker compose --profile workers logs -f vision-worker
+docker compose --profile workers down                 # stop (the models volume is kept)
+
+python scripts/submit_video.py "<video url>"          # from local/, on the host, as before
+```
+
+- A one-shot `init` service creates the topics and bucket and applies the SQL before any worker starts.
+- Three images are built from `local/Dockerfile`: `light` (builders, summarizer), `media` (downloader, frame extractor, audio worker) and `vision` (CPU). The Whisper and Florence-2 models are downloaded on first use into the `models` volume, so a restart does not download them again.
+- The summarizer reaches Ollama on the host, which must listen on all interfaces: `OLLAMA_HOST=0.0.0.0 ollama serve`.
+- On a network that re-signs HTTPS, copy the company CA certificate (a `.crt` file) into `local/ca/` before building (it is git-ignored), and set `YTDLP_NO_CERTIFI=1` in `local/infra/.env`.
+
 Check the result in Postgres:
 
 ```sql

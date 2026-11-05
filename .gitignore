@@ -15,3 +15,7 @@ local/demo/**/*.wav
 # Machine-specific config
 local/ssl.env
 .vscode/
+
+# Company CA certificates for image builds (see local/Dockerfile)
+local/ca/*
+!local/ca/.gitkeep

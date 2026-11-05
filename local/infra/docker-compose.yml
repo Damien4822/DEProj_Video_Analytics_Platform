@@ -4,6 +4,32 @@ name: vidpipe
 # Start:  docker compose up -d      (run from local/infra, after copying .env.example to .env)
 # Topics are NOT created here: run local/scripts/create_topics.py
 
+# Shared settings of the worker containers (inside the compose network the services have their own
+# hostnames, so the host-side values in .env, such as localhost:9092, are overridden here).
+x-infra-ready: &infra-ready
+  kafka: { condition: service_healthy }
+  postgres: { condition: service_healthy }
+  s3: { condition: service_started }
+
+x-worker-env: &worker-env
+  KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+  S3_ENDPOINT: http://s3:9000
+  S3_ACCESS_KEY: ${S3_ACCESS_KEY:?set in .env}
+  S3_SECRET_KEY: ${S3_SECRET_KEY:?set in .env}
+  S3_BUCKET: ${S3_BUCKET:-vidpipe}
+  POSTGRES_HOST: postgres
+  POSTGRES_USER: ${POSTGRES_USER:?set in .env}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+  POSTGRES_DB: ${POSTGRES_DB:-vidpipe}
+
+x-worker: &worker
+  profiles: [workers]
+  restart: unless-stopped
+  environment: *worker-env
+  depends_on:
+    <<: *infra-ready
+    init: { condition: service_completed_successfully }
+
 services:
   kafka:
     image: apache/kafka:4.0.0
@@ -89,7 +115,86 @@ services:
       timeout: 5s
       retries: 6
 
+  # ---------------------------------------------------------------------------------------------
+  # Pipeline workers, in containers (replaces one terminal per worker). Off by default:
+  #   docker compose --profile workers up -d --build
+  #   docker compose --profile workers up -d --scale vision-worker=3     # more vision workers
+  # The first start downloads the Whisper and Florence-2 models into the `models` volume.
+  # ---------------------------------------------------------------------------------------------
+
+  # One-shot setup: topics, bucket, tables. Every worker waits for it to finish.
+  init:
+    <<: *worker
+    build: { context: ../.., dockerfile: local/Dockerfile, target: light }
+    image: vidpipe-light
+    command: sh -c "python scripts/create_topics.py && python scripts/init_storage.py && python scripts/apply_sql.py"
+    restart: "no"
+    depends_on: *infra-ready
+
+  downloader:
+    <<: *worker
+    build: { context: ../.., dockerfile: local/Dockerfile, target: media }
+    image: vidpipe-media
+    command: python -m services.downloader.worker
+    environment:
+      <<: *worker-env
+      YTDLP_NO_CERTIFI: ${YTDLP_NO_CERTIFI:-0}   # 1 on a network that re-signs HTTPS
+
+  frame-extractor:
+    <<: *worker
+    build: { context: ../.., dockerfile: local/Dockerfile, target: media }
+    image: vidpipe-media
+    command: python -m services.frame_extractor.worker
+
+  audio-worker:
+    <<: *worker
+    build: { context: ../.., dockerfile: local/Dockerfile, target: media }
+    image: vidpipe-media
+    command: python -m services.audio_worker.worker
+    environment:
+      <<: *worker-env
+      HF_HOME: /models/hf
+    volumes:
+      - models:/models
+
+  vision-worker:
+    <<: *worker
+    build: { context: ../.., dockerfile: local/Dockerfile, target: vision }
+    image: vidpipe-vision
+    command: python -m services.vision_worker.worker
+    environment:
+      <<: *worker-env
+      HF_HOME: /models/hf
+    volumes:
+      - models:/models
+
+  chunk-builder:
+    <<: *worker
+    build: { context: ../.., dockerfile: local/Dockerfile, target: light }
+    image: vidpipe-light
+    command: python -m services.chunk_builder.worker
+
+  timeline-builder:
+    <<: *worker
+    build: { context: ../.., dockerfile: local/Dockerfile, target: light }
+    image: vidpipe-light
+    command: python -m services.timeline_builder.worker
+
+  # Needs Ollama on the host, listening on all interfaces: OLLAMA_HOST=0.0.0.0 ollama serve
+  summarizer:
+    <<: *worker
+    build: { context: ../.., dockerfile: local/Dockerfile, target: light }
+    image: vidpipe-light
+    command: python -m services.summarizer.worker
+    environment:
+      <<: *worker-env
+      LLM_BASE_URL: ${LLM_BASE_URL:-http://host.docker.internal:11434}
+      LLM_MODEL: ${LLM_MODEL:-qwen2.5:3b}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
 volumes:
   kafka_data:
   s3_data:
   postgres_data:
+  models:

@@ -1,0 +1,13 @@
+.git
+**/__pycache__
+**/*.pyc
+**/.ipynb_checkpoints
+.vscode
+clouds
+# the virtualenv lives in local/.env (a directory)
+local/.env
+# credentials
+local/infra/.env
+local/ssl.env
+# notebooks and demo media
+local/demo
