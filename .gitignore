@@ -16,6 +16,6 @@ local/demo/**/*.wav
 local/ssl.env
 .vscode/
 
-# Company CA certificates for image builds (see local/Dockerfile)
+# Custom CA certificates for image builds (see local/Dockerfile)
 local/ca/*
 !local/ca/.gitkeep

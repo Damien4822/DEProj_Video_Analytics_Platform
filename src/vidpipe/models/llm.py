@@ -19,7 +19,7 @@ class OllamaClient:
         self.model = model or cfg.llm_model
         self.num_ctx = num_ctx or cfg.llm_num_ctx
         self.timeout_s = timeout_s or cfg.llm_timeout_s
-        # A local server must not go through a corporate proxy.
+        # A local server must not go through a proxy.
         self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
     def generate(self, prompt, system=None):

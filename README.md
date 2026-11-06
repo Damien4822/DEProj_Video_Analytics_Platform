@@ -369,7 +369,7 @@ python scripts/check_models.py              # report only: ok / MISSING for each
 python scripts/check_models.py --download   # fetch the missing Hugging Face models now (Ollama's model: ollama pull)
 ```
 
-Downloading ahead of time avoids a long first run and shows network or certificate problems early. Behind a company proxy that re-signs HTTPS, load the CA paths first (`set -a; source ssl.env; set +a`, see `ssl.env.example`). After everything is downloaded you can set `HF_HUB_OFFLINE=1` so the workers never touch the network. In containers, check the `models` volume with `docker compose --profile workers run --rm embedder python scripts/check_models.py`.
+Downloading ahead of time avoids a long first run and shows network or certificate problems early. Behind a proxy that re-signs HTTPS, load the CA paths first (`set -a; source ssl.env; set +a`, see `ssl.env.example`). After everything is downloaded you can set `HF_HUB_OFFLINE=1` so the workers never touch the network. In containers, check the `models` volume with `docker compose --profile workers run --rm embedder python scripts/check_models.py`.
 
 Local infrastructure:
 
@@ -430,7 +430,7 @@ python scripts/submit_video.py "<video url>"          # from local/, on the host
 - A one-shot `init` service creates the topics and bucket and applies the SQL before any worker starts.
 - Four images are built from `local/Dockerfile`: `light` (builders, summarizer), `media` (downloader, frame extractor, audio worker), `vision` (CPU) and `embed` (the embedder and the search script). The Whisper, Florence-2 and embedding models are downloaded on first use into the `models` volume, so a restart does not download them again.
 - The summarizer reaches Ollama on the host, which must listen on all interfaces: `OLLAMA_HOST=0.0.0.0 ollama serve`.
-- On a network that re-signs HTTPS, copy the company CA certificate (a `.crt` file) into `local/ca/` before building (it is git-ignored), and set `YTDLP_NO_CERTIFI=1` in `local/infra/.env`.
+- On a network that re-signs HTTPS, copy the CA certificate (a `.crt` file) into `local/ca/` before building (it is git-ignored), and set `YTDLP_NO_CERTIFI=1` in `local/infra/.env`.
 
 Check the result in Postgres:
 

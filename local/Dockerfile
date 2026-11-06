@@ -13,7 +13,7 @@ FROM python:3.10-slim AS base
 ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
-# On a network that re-signs HTTPS, copy the company CA certificate (a .crt file) into local/ca/ first.
+# On a network that re-signs HTTPS, copy the CA certificate (a .crt file) into local/ca/ first.
 COPY local/ca/ /usr/local/share/ca-certificates/
 RUN update-ca-certificates
 ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \

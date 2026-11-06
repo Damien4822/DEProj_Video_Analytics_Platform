@@ -45,7 +45,7 @@ The notebooks create the Delta tables themselves: `videos`, `frames`, `audio_seg
 - A Databricks Free Edition workspace with a **catalog** already created (Terraform creates the schema inside it, not the catalog).
 - A **personal access token**: user menu > Settings > Developer > Access tokens > Generate new token. Use a short lifetime and copy it once.
 - **Terraform >= 1.5** (`terraform -version`).
-- Network access from your machine to `https://<workspace>.cloud.databricks.com` and to the Terraform registry.
+- Internet access from your machine to `https://<workspace>.cloud.databricks.com` and to the Terraform registry.
 - For the scripts: `pip install -r requirements.txt`, and `ffmpeg` on the PATH.
 
 ## Setup
@@ -81,8 +81,7 @@ curl -s -o /dev/null -w "API status: %{http_code}\n" \
 
 | Result | Meaning and fix |
 |---|---|
-| `No route to host` or timeout | The network blocks the workspace. Run from another machine or ask for `*.cloud.databricks.com` to be allowed. |
-| Certificate error | A proxy re-signs HTTPS. Point `SSL_CERT_FILE` at your CA bundle. |
+| `No route to host` or timeout | The workspace is not reachable from this machine. Check `DATABRICKS_HOST` and your internet connection. |
 | `API status: 401` or `403` | Token is invalid or expired. Generate a new one. |
 | `API status: 200` | Connection and token are fine. Continue. |
 
@@ -106,7 +105,7 @@ If `plan` reports an authentication error that points to the OAuth page, the pro
 
 ## Step 3: get a video into the `raw` volume
 
-Either upload an mp4 by hand in the Catalog view, or use the helper, which downloads on your machine and uploads through the Files API (the local copy is deleted once the remote size matches):
+Either upload a video (mp4, webm, mkv or mov) by hand in the Catalog view, or use the helper, which downloads on your machine and uploads through the Files API (the local copy is deleted once the remote size matches):
 
 ```bash
 pip install -r clouds/databricks/requirements.txt
@@ -117,7 +116,7 @@ python clouds/databricks/scripts/upload_video.py "<video url>"      # after `sou
 
 1. Create a **Git folder** in the workspace that clones this repo, so notebooks can import `src/vidpipe`. After each push, press Pull.
 2. Open `notebooks/00_smoke_test`, attach serverless compute, fill in the `catalog` widget and run it.
-3. Run `01_extract_keyframes`, then `02_transcribe_and_describe` (attach serverless **GPU** for 02, or set its `device` widget to `cpu`).
+3. Put the video in `raw` first (Step 3). Run `01_extract_keyframes`, then `02_transcribe_and_describe` (attach serverless **GPU** for 02, or set its `device` widget to `cpu`).
 4. Each notebook installs its own pinned packages in its first `%pip` cell. If a version error appears, fix only the versions and copy the working pins back into the repo. Notebook 02 prints the versions that worked in its last cell.
 
 The CPU compute seen here had 4 CPUs and about 6 GB of free RAM. Notebook 02 prints seconds of compute per minute of video, for the scaling notes.
