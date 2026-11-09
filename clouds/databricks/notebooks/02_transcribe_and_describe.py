@@ -64,9 +64,10 @@ sys.path.insert(0, str(repo_root / "src"))
 # ctranslate2 (faster-whisper) needs cuBLAS 12, but this GPU image ships CUDA 13 only;
 # preload the pip-installed cu12 cuBLAS (nvidia-cublas-cu12 from the %pip cell) before any GPU call.
 import ctypes, sysconfig
-for _lib in ("libcublasLt.so.12", "libcublas.so.12"):
-    ctypes.CDLL(os.path.join(sysconfig.get_paths()["purelib"], "nvidia", "cublas", "lib", _lib),
-                mode=ctypes.RTLD_GLOBAL)
+if device == "cuda":   # not needed on CPU
+    for _lib in ("libcublasLt.so.12", "libcublas.so.12"):
+        ctypes.CDLL(os.path.join(sysconfig.get_paths()["purelib"], "nvidia", "cublas", "lib", _lib),
+                    mode=ctypes.RTLD_GLOBAL)
 
 import cv2
 import torch
@@ -255,4 +256,5 @@ for video in videos:
 from importlib.metadata import version
 
 print({p: version(p) for p in ["opencv-python-headless", "numpy", "faster-whisper", "transformers", "torch",
-                               "timm", "einops", "pillow", "rapidocr-onnxruntime", "python-dotenv"]})
+                               "timm", "einops", "pillow", "rapidocr-onnxruntime", "python-dotenv", "av", "ctranslate2",
+                               "nvidia-cublas-cu12"]})
