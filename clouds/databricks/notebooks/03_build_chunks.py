@@ -1,4 +1,8 @@
 # Databricks notebook source
+# /// script
+# [tool.databricks.environment]
+# environment_version = "6"
+# ///
 # MAGIC %md
 # MAGIC # 03 Build chunks
 # MAGIC Databricks version of the `chunk_builder` worker. Reads the `audio_segments`, `visual_segments` and `ocr_items`

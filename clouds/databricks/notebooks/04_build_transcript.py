@@ -1,4 +1,8 @@
 # Databricks notebook source
+# /// script
+# [tool.databricks.environment]
+# environment_version = "6"
+# ///
 # MAGIC %md
 # MAGIC # 04 Build transcript
 # MAGIC Databricks version of the `timeline_builder` worker. Merges the audio, visual, object and OCR tables of one
