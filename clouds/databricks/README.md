@@ -40,7 +40,9 @@ clouds/databricks/
 ├── notebooks/                 processing code, run on Databricks (pulled in through a Git folder)
 │   ├── 00_smoke_test.py       checks what the compute allows: packages, CPU/RAM, repo import, network
 │   ├── 01_extract_keyframes.py  keyframes from the videos in `raw` -> `videos` and `frames` tables
-│   └── 02_transcribe_and_describe.py  Whisper + Florence-2 + OCR -> audio, visual, object and OCR tables (resumable)
+│   ├── 02_transcribe_and_describe.py  Whisper + Florence-2 + OCR -> audio, visual, object and OCR tables (resumable)
+│   ├── 03_build_chunks.py     overlapping time windows of speech, scene and on-screen text -> `chunks` table
+│   └── 04_build_transcript.py whole-video transcript JSON (for a summarizing LLM) -> `video_timelines` table
 └── scripts/                   helpers that run on your own machine
     └── upload_video.py        download a video with yt-dlp, upload it to the `raw` volume, delete the local copy
 ```
@@ -58,7 +60,7 @@ clouds/databricks/
 | Schema `vidpipe` (in your catalog) | Holds the pipeline's tables and volumes |
 | Volumes `raw`, `models`, `frames` | Videos plus the `_sources.json` register of the URLs they came from (written by the upload script), model weights and the Hugging Face cache, keyframe images |
 
-The notebooks create the Delta tables themselves (`videos` includes the `source_url` the video came from): `videos`, `frames`, `audio_segments`, `visual_segments`, `detected_objects`, `ocr_items`.
+The notebooks create the Delta tables themselves (`videos` includes the `source_url` the video came from): `videos`, `frames`, `audio_segments`, `visual_segments`, `detected_objects`, `ocr_items`, `chunks` and `video_timelines` (the transcript JSON as text, with its SHA-256).
 
 ## Requirements
 
@@ -151,7 +153,8 @@ python clouds/databricks/scripts/upload_video.py "<video url>"      # after `sou
 2. Open `notebooks/00_smoke_test`, attach serverless compute, fill in the `catalog` widget and run it.
 3. Have the video in `raw` first (Step 3). Run `01_extract_keyframes`, then `02_transcribe_and_describe` (attach serverless **GPU** for 02, or set its `device` widget to `cpu`).
 4. **One video at a time:** both notebooks require the `filename` widget (the video's name in `raw`, e.g. `abc123.webm`) and stop if it is empty, so nothing else in `raw` is processed. Notebook 02 is resumable: it skips audio that is already transcribed and frames that are already described, and saves vision results every `write_every` frames, so a quota cut loses at most one batch. After re-running 01 on a video, set 02's `force` widget to `yes` so it redoes that video.
-5. Each notebook installs its own pinned packages in its first `%pip` cell. If a version error appears, fix only the versions and copy the working pins back into the repo. Notebook 02 prints the versions that worked in its last cell. It pins `av` and `nvidia-cublas-cu12` and preloads the cuBLAS 12 library on GPU, because the GPU image ships a newer CUDA than `ctranslate2` (under faster-whisper) expects; `faster-whisper` itself is not pinned yet.
+5. After 02 has finished a video, run `03_build_chunks` and `04_build_transcript` with the same `filename`. They run on plain serverless CPU, install no packages and stop with a message if 02 has not described every keyframe. 03 has `window_s` and `overlap_s` widgets (45 and 10 by default); other values create a separate `chunk_version` beside the old chunks. 04 writes nothing when the rebuilt JSON is identical. If either fails on `import pydantic`, install it with `%pip install pydantic` and restart Python.
+6. Each notebook installs its own pinned packages in its first `%pip` cell. If a version error appears, fix only the versions and copy the working pins back into the repo. Notebook 02 prints the versions that worked in its last cell. It pins `av` and `nvidia-cublas-cu12` and preloads the cuBLAS 12 library on GPU, because the GPU image ships a newer CUDA than `ctranslate2` (under faster-whisper) expects; `faster-whisper` itself is not pinned yet.
 
 Serverless compute is small, so keep to one video at a time. Notebook 02 prints seconds of compute per minute of video, for the scaling notes.
 
@@ -164,8 +167,8 @@ Serverless compute is small, so keep to one video at a time. Notebook 02 prints 
 
 ## Next
 
-1. Notebook `03` to build the chunks, reusing `vidpipe.chunking`.
-2. The embedder (bge-m3 should fit on the GPU option) and a Delta table for the vectors.
-3. `jobs.tf`: a serverless job that runs the notebooks in order.
+1. The embedder (bge-m3 should fit on the GPU option) and a Delta table for the vectors.
+2. `jobs.tf`: a serverless job that runs the notebooks in order.
+3. The summary stage is not ported: it needs an LLM server, which Free Edition does not give us.
 
 Heavier models (larger Whisper and Florence-2 variants) and frame batching are left for the AWS stack, where GPU time is not rationed by a quota.
