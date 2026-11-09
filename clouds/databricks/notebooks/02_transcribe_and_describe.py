@@ -5,7 +5,7 @@
 # MAGIC notebook 01 and writes `audio_segments`, `visual_segments`, `detected_objects` and `ocr_items` Delta tables,
 # MAGIC using the same code as the Kafka pipeline (`FrameDescriber`, `clean_segments`, `clean_boxes`).
 # MAGIC
-# MAGIC Designed for a serverless GPU (1x A10, 24 GB); set the `device` widget to `cpu` to run without one.
+# MAGIC Designed for a serverless GPU; set the `device` widget to `cpu` to run without one.
 # MAGIC Safe to re-run and **resumable**: finished work is skipped (audio if the video already has segments, vision for
 # MAGIC frames already described), and vision rows are saved every `write_every` frames, so a quota cut or an error
 # MAGIC loses at most one batch. Set `force` to `yes` to redo a video from scratch. Only the video in the `filename` widget is processed (required).

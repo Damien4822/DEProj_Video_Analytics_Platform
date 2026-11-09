@@ -9,6 +9,11 @@ Infrastructure as code and run scripts for moving the pipeline off the local Doc
 | [`databricks/`](databricks/README.md) | In progress | Lakehouse/batch variant on Databricks Free Edition: Terraform for the schema and volumes, notebooks for keyframes, Whisper and Florence, a local script to upload videos. |
 | `aws/` | Empty | Reserved for the AWS stacks (persistent and ephemeral). |
 
+## Why two platforms
+
+- **Databricks (first):** validates the pipeline logic on managed cloud compute and gives baseline numbers (compute seconds per minute of video). Free Edition is quota-limited and serverless-only, so it cannot show scaling. Pros, cons and usage are in [`databricks/README.md`](databricks/README.md).
+- **AWS (next):** where scaling is tried with a configuration we choose: workers consuming a backlog, autoscaling on video length, heavier models on larger GPUs, and a URL that starts processing as an event. The plan is in the root README; the folder is empty until then.
+
 ## How credentials work
 
 One entry point for every platform: **`source clouds/use.sh <platform>`**, run from the repo root.

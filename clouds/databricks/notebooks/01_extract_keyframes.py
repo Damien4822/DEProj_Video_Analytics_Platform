@@ -3,7 +3,7 @@
 # MAGIC # 01 Extract keyframes
 # MAGIC Databricks version of the `frame_extractor` worker. Every video in the `raw` volume becomes keyframe JPEGs
 # MAGIC in the `frames` volume plus rows in the `videos` and `frames` Delta tables, using the same `iter_keyframes`
-# MAGIC code as the Kafka pipeline. Videos are processed one at a time (the compute has ~6 GB free).
+# MAGIC code as the Kafka pipeline. Videos are processed one at a time (serverless memory is limited).
 # MAGIC Safe to re-run: a video's old frames and rows are replaced.
 # MAGIC
 # MAGIC Only the video named in the `filename` widget is processed (the other files in `raw` are left alone), and the
