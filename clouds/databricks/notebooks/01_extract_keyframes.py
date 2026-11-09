@@ -6,8 +6,10 @@
 # MAGIC code as the Kafka pipeline. Videos are processed one at a time (the compute has ~6 GB free).
 # MAGIC Safe to re-run: a video's old frames and rows are replaced.
 # MAGIC
-# MAGIC Videos are expected in the `raw` volume (upload them with `scripts/upload_video.py`; `.mp4`, `.mkv`, `.webm`
-# MAGIC and `.mov` are picked up). Nothing is downloaded here.
+# MAGIC Only the video named in the `filename` widget is processed (the other files in `raw` are left alone), and the
+# MAGIC notebook stops if it is empty. Upload the video first with `scripts/upload_video.py`; nothing is downloaded here.
+# MAGIC The `videos` row also gets `source_url`, read from the register the upload script keeps in `raw`
+# MAGIC (`_sources.json`); it is empty for a video that was uploaded by hand.
 
 # COMMAND ----------
 
@@ -21,9 +23,12 @@ dbutils.library.restartPython()
 
 dbutils.widgets.text("catalog", "", "Catalog name")
 dbutils.widgets.text("schema", "vidpipe", "Schema name")
+dbutils.widgets.text("filename", "", "Video file name in raw (required)")
 catalog = dbutils.widgets.get("catalog")
 schema = dbutils.widgets.get("schema")
+filename = dbutils.widgets.get("filename").strip()
 assert catalog, "fill in the catalog widget at the top of the notebook"
+assert filename, "fill in the filename widget: the video in the raw volume to process"
 
 SAMPLE_FPS = 1.0       # same defaults as SAMPLE_FPS / DIFF_THRESHOLD in vidpipe.config
 DIFF_THRESHOLD = 8.0
@@ -44,12 +49,14 @@ sys.path.insert(0, str(repo_root / "src"))
 
 # COMMAND ----------
 
+import json
 import os
 import shutil
 import uuid
 
 import cv2
 from pyspark.sql import Row
+from pyspark.sql.types import DoubleType, LongType, StringType, StructField, StructType
 
 from vidpipe.keyframes import iter_keyframes  # noqa: E402
 
@@ -83,29 +90,50 @@ def extract(video_path, video_id):
     if not rows:
         raise ValueError(f"no frames could be decoded from {video_path}")
     video = Row(video_id=video_id, filename=os.path.basename(video_path), storage_path=video_path,
-                duration_s=duration_s, keyframe_count=len(rows))
+                duration_s=duration_s, keyframe_count=len(rows), source_url=source_url_for(os.path.basename(video_path)))
     return video, rows
 
 
-def replace_rows(table, video_id, rows):
+def replace_rows(table, video_id, rows, schema=None):
     if spark.catalog.tableExists(table):
         spark.sql(f"DELETE FROM {table} WHERE video_id = '{video_id}'")
-    spark.createDataFrame(rows).write.mode("append").saveAsTable(table)
+    # mergeSchema lets the videos table gain the source_url column on its first run after this change
+    spark.createDataFrame(rows, schema).write.mode("append").option("mergeSchema", "true").saveAsTable(table)
+
+
+# Explicit, because source_url (and duration_s) can be None, which Spark cannot infer a type from.
+VIDEO_SCHEMA = StructType([
+    StructField("video_id", StringType()), StructField("filename", StringType()),
+    StructField("storage_path", StringType()), StructField("duration_s", DoubleType()),
+    StructField("keyframe_count", LongType()), StructField("source_url", StringType()),
+])
+
+
+def source_url_for(filename):
+    """URL the upload script recorded for this file in raw/_sources.json, or None."""
+    try:
+        with open(os.path.join(raw_dir, "_sources.json")) as f:
+            register = json.load(f)
+    except FileNotFoundError:
+        return None
+    return next((e["url"] for e in register.values() if e["filename"] == filename), None)
 
 # COMMAND ----------
 
 names = sorted(f for f in os.listdir(raw_dir) if f.lower().endswith((".mp4", ".mkv", ".webm", ".mov")))
+assert filename in names, f"{filename!r} is not in {raw_dir}: {names}"
+names = [filename]
 print(f"{len(names)} video(s) in {raw_dir}")
 for name in names:
     video_id = video_id_for(name)
     video, rows = extract(os.path.join(raw_dir, name), video_id)
-    replace_rows(videos_table, video_id, [video])
+    replace_rows(videos_table, video_id, [video], VIDEO_SCHEMA)
     replace_rows(frames_table, video_id, rows)
     print(f"{name}: {len(rows)} keyframes of {video.duration_s:.1f}s -> {video_id}")
 
 # COMMAND ----------
 
 display(spark.sql(f"""
-    SELECT v.filename, v.duration_s, count(f.frame_idx) AS keyframes
+    SELECT v.filename, v.source_url, v.duration_s, count(f.frame_idx) AS keyframes
     FROM {videos_table} v LEFT JOIN {frames_table} f USING (video_id)
-    GROUP BY v.filename, v.duration_s"""))
+    GROUP BY v.filename, v.source_url, v.duration_s"""))

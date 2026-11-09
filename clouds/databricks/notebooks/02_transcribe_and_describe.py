@@ -6,7 +6,10 @@
 # MAGIC using the same code as the Kafka pipeline (`FrameDescriber`, `clean_segments`, `clean_boxes`).
 # MAGIC
 # MAGIC Designed for a serverless GPU (1x A10, 24 GB); set the `device` widget to `cpu` to run without one.
-# MAGIC Safe to re-run: a video's old rows are replaced. Timings are printed at the end for the quota notes.
+# MAGIC Safe to re-run and **resumable**: finished work is skipped (audio if the video already has segments, vision for
+# MAGIC frames already described), and vision rows are saved every `write_every` frames, so a quota cut or an error
+# MAGIC loses at most one batch. Set `force` to `yes` to redo a video from scratch. Only the video in the `filename` widget is processed (required).
+# MAGIC Timings are printed at the end for the quota notes.
 # MAGIC
 # MAGIC **Environment errors:** the package versions below are the repo's, plus an unpinned `faster-whisper`. If a
 # MAGIC version conflict appears, fix only versions, then pin the working ones in the `%pip` line (the last cell prints them).
@@ -26,13 +29,20 @@ dbutils.widgets.text("schema", "vidpipe", "Schema name")
 dbutils.widgets.dropdown("device", "cuda", ["cuda", "cpu"], "Device")
 dbutils.widgets.text("whisper_model", "small", "Whisper model size")
 dbutils.widgets.text("vision_model", "microsoft/Florence-2-base", "Vision model")
+dbutils.widgets.text("filename", "", "Video file name (required)")
+dbutils.widgets.dropdown("force", "no", ["no", "yes"], "Redo finished work")
+dbutils.widgets.text("write_every", "200", "Frames per save")
 
 catalog = dbutils.widgets.get("catalog")
 schema = dbutils.widgets.get("schema")
 device = dbutils.widgets.get("device")
 whisper_model_name = dbutils.widgets.get("whisper_model")
 vision_model_name = dbutils.widgets.get("vision_model")
+filename = dbutils.widgets.get("filename").strip()
+force = dbutils.widgets.get("force") == "yes"
+write_every = int(dbutils.widgets.get("write_every"))
 assert catalog, "fill in the catalog widget at the top of the notebook"
+assert filename, "fill in the filename widget: the video to process (same name as in notebook 01)"
 
 models_dir = f"/Volumes/{catalog}/{schema}/models"
 t = lambda name: f"{catalog}.{schema}.{name}"
@@ -70,6 +80,12 @@ def replace_rows(table, video_id, rows):
     if rows:
         spark.createDataFrame(rows).write.mode("append").saveAsTable(table)
 
+
+def row_count(table, video_id):
+    if not spark.catalog.tableExists(table):
+        return 0
+    return spark.table(table).where(f"video_id = '{video_id}'").count()
+
 # COMMAND ----------
 
 # MAGIC %md
@@ -87,21 +103,27 @@ def has_audio(path):
         return len(container.streams.audio) > 0
 
 
-whisper = WhisperModel(whisper_model_name, device=device,
-                       compute_type="float16" if device == "cuda" else "int8")
+whisper = None   # loaded on first use, so a run with nothing left to transcribe skips the model load
 
-videos = spark.table(t("videos")).orderBy("filename").collect()
+videos = spark.table(t("videos")).where(f"filename = '{filename}'").collect()
+assert videos, f"{filename!r} is not in the videos table; run notebook 01 on it first"
 print(f"{len(videos)} video(s)")
 audio_seconds = {}
 
 for video in videos:
     start = time.time()
+    audio_seconds[video.video_id] = 0.0
     if not has_audio(video.storage_path):
         print(f"{video.filename}: no audio stream")
         replace_rows(t("audio_segments"), video.video_id, [])
-        audio_seconds[video.video_id] = 0.0
+        continue
+    if not force and row_count(t("audio_segments"), video.video_id) > 0:
+        print(f"{video.filename}: audio already transcribed, skipped (force=yes to redo)")
         continue
 
+    if whisper is None:
+        whisper = WhisperModel(whisper_model_name, device=device,
+                               compute_type="float16" if device == "cuda" else "int8")
     segments, info = whisper.transcribe(video.storage_path)
     raw = [{"start": s.start, "end": s.end, "text": s.text} for s in segments]
     cleaned, issues = clean_segments(raw, video.duration_s)
@@ -116,7 +138,8 @@ for video in videos:
           f"{audio_seconds[video.video_id]:.1f}s for {video.duration_s:.0f}s of video")
 
 del whisper
-torch.cuda.empty_cache()
+if device == "cuda":
+    torch.cuda.empty_cache()
 
 # COMMAND ----------
 
@@ -129,12 +152,37 @@ torch.cuda.empty_cache()
 describer = FrameDescriber(model_id=vision_model_name, device=device)
 vision_seconds = {}
 
+
+def save_batch(video_id, segment_rows, object_rows, ocr_rows):
+    """Save one batch. A frame counts as done once its visual_segments row exists, so that row goes last;
+    objects and text of the same frames are deleted first, so a batch interrupted half-way is redone cleanly."""
+    idxs = ", ".join(str(r.frame_idx) for r in segment_rows)
+    for table, rows in ((t("detected_objects"), object_rows), (t("ocr_items"), ocr_rows)):
+        if spark.catalog.tableExists(table):
+            spark.sql(f"DELETE FROM {table} WHERE video_id = '{video_id}' AND frame_idx IN ({idxs})")
+        if rows:
+            spark.createDataFrame(rows).write.mode("append").saveAsTable(table)
+    spark.createDataFrame(segment_rows).write.mode("append").saveAsTable(t("visual_segments"))
+
+
 for video in videos:
     start = time.time()
-    frames = spark.table(t("frames")).where(f"video_id = '{video.video_id}'").orderBy("frame_idx").collect()
-    segment_rows, object_rows, ocr_rows = [], [], []
+    if force:
+        for name in ("visual_segments", "detected_objects", "ocr_items"):
+            replace_rows(t(name), video.video_id, [])
 
-    for frame in frames:
+    frames = spark.table(t("frames")).where(f"video_id = '{video.video_id}'").orderBy("frame_idx").collect()
+    done = set()
+    if spark.catalog.tableExists(t("visual_segments")):
+        done = {r.frame_idx for r in spark.table(t("visual_segments"))
+                .where(f"video_id = '{video.video_id}'").select("frame_idx").collect()}
+    todo = [f for f in frames if f.frame_idx not in done]
+    print(f"{video.filename}: {len(frames)} frames, {len(done)} already described, {len(todo)} to do")
+
+    segment_rows, object_rows, ocr_rows = [], [], []
+    n_objects = n_ocr = 0
+
+    for n, frame in enumerate(todo, start=1):
         image = cv2.imread(frame.frame_path)
         if image is None:
             raise ValueError(f"cannot decode frame image {frame.frame_path}")
@@ -156,12 +204,16 @@ for video in videos:
                                 text=o["text"], score=o.get("score"), x1=o["bbox"][0], y1=o["bbox"][1],
                                 x2=o["bbox"][2], y2=o["bbox"][3]))
 
-    replace_rows(t("visual_segments"), video.video_id, segment_rows)
-    replace_rows(t("detected_objects"), video.video_id, object_rows)
-    replace_rows(t("ocr_items"), video.video_id, ocr_rows)
+        if n % write_every == 0 or n == len(todo):
+            save_batch(video.video_id, segment_rows, object_rows, ocr_rows)
+            n_objects += len(object_rows)
+            n_ocr += len(ocr_rows)
+            segment_rows, object_rows, ocr_rows = [], [], []
+            print(f"  saved {n}/{len(todo)} frames ({time.time() - start:.0f}s)")
+
     vision_seconds[video.video_id] = time.time() - start
-    per_frame = vision_seconds[video.video_id] / max(len(frames), 1)
-    print(f"{video.filename}: {len(frames)} frames, {len(object_rows)} objects, {len(ocr_rows)} text items, "
+    per_frame = vision_seconds[video.video_id] / max(len(todo), 1)
+    print(f"{video.filename}: {len(todo)} frames this run, {n_objects} objects, {n_ocr} text items, "
           f"{vision_seconds[video.video_id]:.1f}s ({per_frame:.2f}s per frame)")
 
 # COMMAND ----------
