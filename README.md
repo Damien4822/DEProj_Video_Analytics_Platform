@@ -348,6 +348,7 @@ cd local
 python3.10 -m venv .env
 source .env/bin/activate
 pip install -r requirements.txt
+pip install -e ..          # makes the shared `vidpipe` package importable (the scripts and workers need it)
 ```
 
 Then open `local/demo/Setup.ipynb` to download sample media, and run the notebooks under `local/demo/`. The first run downloads the Whisper and Florence-2 models (see Models below to check or fetch them first).
@@ -396,8 +397,7 @@ ollama pull qwen2.5:3b          # Ollama listens on http://localhost:11434
 Run the pipeline, from `local/`, each in its own terminal:
 
 ```bash
-pip install -e ..                           # once: makes the shared `vidpipe` package importable
-python scripts/apply_sql.py                 # create the tables (skip if the volume was just created)
+python scripts/apply_sql.py                 # create the tables; needed on a Postgres volume made before the embedding tables (006) existed, harmless otherwise
 
 python -m services.downloader.worker        # terminal 1
 python -m services.audio_worker.worker      # terminal 2
@@ -408,7 +408,7 @@ python -m services.timeline_builder.worker  # terminal 6 (whole-video transcript
 python -m services.summarizer.worker        # terminal 7 (short summary; needs Ollama running)
 python -m services.embedder.worker          # terminal 8 (one vector per chunk, for search)
 
-python scripts/create_topics.py             # again, if the stack was created before timeline.ready existed
+python scripts/create_topics.py             # again, if the topics were created before timeline.ready, chunk.ready or chunk.embedded existed
 
 python scripts/submit_video.py "<video url>"            # terminal 9: submit a URL
 python scripts/submit_video.py --file path/to/video.mp4  # or a local file
@@ -467,7 +467,16 @@ python scripts/search.py "what is said about stress at work"        # from local
 python scripts/search.py "stress" --video <video_id> --limit 10
 ```
 
-The query is embedded with the same model as the chunks (`EMBED_MODEL`). Changing `EMBED_MODEL` leaves the old vectors in place and embeds new chunks with the new model; to embed existing videos again, rebuild their chunks or resubmit them. With containers: `docker compose --profile workers run --rm embedder python scripts/search.py "your query"`.
+The embedder needs the `chunks` rows to exist first, so it starts producing vectors once the chunk builder has run (the video must be fully described). If `chunk_embeddings` stays empty, check, in order: the embedder terminal for errors, `check_models.py` for the model, and that `chunks` has rows for the video.
+
+To try `BAAI/bge-m3` (1024 dimensions, larger and slower, no query prefix): set `EMBED_MODEL=BAAI/bge-m3` for the embedder and `search.py` (in `local/infra/.env` for containers), and run `check_models.py --download`. New videos are embedded with it from then on. Videos already processed are **not** embedded again automatically: the chunk builder emits `chunk.ready` only when chunks change, so re-running it on unchanged chunks does nothing. To embed an existing video with the new model, change `CHUNK_WINDOW_S` or `CHUNK_OVERLAP_S` (a new chunk version means new chunks and new events), or submit it as a new video. Search works without an index. For a large collection add an index for that model, as `006_embeddings.sql` does for the default:
+
+```sql
+CREATE INDEX IF NOT EXISTS idx_chunk_embeddings_bge_m3 ON chunk_embeddings
+    USING hnsw ((embedding::vector(1024)) vector_cosine_ops) WHERE model = 'BAAI/bge-m3';
+```
+
+The query is embedded with the same model as the chunks (`EMBED_MODEL`). Changing `EMBED_MODEL` leaves the old vectors in place and embeds newly built chunks with the new model (see the note above for existing videos). With containers: `docker compose --profile workers run --rm embedder python scripts/search.py "your query"`.
 
 Failures land on the `pipeline.errors` topic (visible in Kafka UI) and as a `failed` row in `processing_runs`. Tests: `pytest` from `local/` (the database tests are skipped when Postgres is not running).
 
@@ -485,4 +494,4 @@ Failures land on the `pipeline.errors` topic (visible in Kafka UI) and as a `fai
 3. Run the downloader, audio, frame extractor, vision, chunk, timeline and summarizer workers end to end and record a scaling benchmark (1 versus N vision workers).
 4. ~~Embedder and the embeddings table~~ written; run it end to end and compare embedding models (bge-small versus bge-m3).
 5. ~~Search over chunks~~ `scripts/search.py` written; judge the result quality on real videos.
-6. Databricks: Terraform, upload script and notebooks 01 and 02 done; chunks, embeddings and a job still to do. AWS: Terraform for the GPU stack and the scaling work (the reason for moving on, since Free Edition is quota-limited).
+6. Databricks: Terraform, upload script and notebooks 01 to 04 written (01 run, 02 being run); embeddings and a job still to do. AWS: Terraform for the GPU stack and the scaling work (the reason for moving on, since Free Edition is quota-limited).

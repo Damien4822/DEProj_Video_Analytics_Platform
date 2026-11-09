@@ -68,7 +68,7 @@ The notebooks create the Delta tables themselves (`videos` includes the `source_
 - A **personal access token**: user menu > Settings > Developer > Access tokens > Generate new token. Use a short lifetime and copy it once.
 - **Terraform >= 1.5** (`terraform -version`).
 - Internet access from your machine to `https://<workspace>.cloud.databricks.com` and to the Terraform registry.
-- For the scripts: `pip install -r requirements.txt`, and `ffmpeg` on the PATH.
+- For the scripts: `pip install -r requirements.txt`, `ffmpeg` on the PATH, and for YouTube links a JavaScript runtime (Deno 2+ or Node 20+) that yt-dlp can find.
 
 ## Setup
 

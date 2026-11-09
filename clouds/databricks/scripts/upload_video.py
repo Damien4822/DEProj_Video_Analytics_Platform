@@ -4,9 +4,8 @@ Why locally: Databricks compute IPs are often challenged by YouTube, a home or o
 Credentials and names come from databricks.env (DATABRICKS_HOST, DATABRICKS_TOKEN, TF_VAR_catalog_name,
 TF_VAR_schema_name), the same file Terraform uses.
 
-    cd clouds/databricks
-    set -a; source databricks.env; set +a
-    python scripts/upload_video.py "<video url>"
+    source clouds/use.sh databricks        # from the repo root; loads clouds/databricks/databricks.env
+    python clouds/databricks/scripts/upload_video.py "<video url>"
 
 The volume keeps a small register of submitted videos, `raw/_sources.json` (URL -> file name). Before anything is
 downloaded the script looks the URL up there, without contacting the video site at all; if the video is registered
