@@ -21,7 +21,7 @@ dbutils.library.restartPython()
 
 # COMMAND ----------
 
-dbutils.widgets.text("catalog", "", "Catalog name")
+dbutils.widgets.text("catalog", "vidpipe", "Catalog name")
 dbutils.widgets.text("schema", "vidpipe", "Schema name")
 dbutils.widgets.text("filename", "", "Video file name in raw (required)")
 catalog = dbutils.widgets.get("catalog")

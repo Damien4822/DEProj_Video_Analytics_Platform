@@ -16,7 +16,7 @@
 
 # COMMAND ----------
 
-# MAGIC %pip install opencv-python-headless==4.12.0.88 numpy python-dotenv faster-whisper transformers==4.49.0 einops timm pillow rapidocr-onnxruntime
+# MAGIC %pip install opencv-python-headless==4.12.0.88 numpy python-dotenv faster-whisper av==18.1.0 nvidia-cublas-cu12==12.9.3.13 transformers==4.49.0 einops timm pillow rapidocr-onnxruntime
 
 # COMMAND ----------
 
@@ -24,7 +24,7 @@ dbutils.library.restartPython()
 
 # COMMAND ----------
 
-dbutils.widgets.text("catalog", "", "Catalog name")
+dbutils.widgets.text("catalog", "vidpipe", "Catalog name")
 dbutils.widgets.text("schema", "vidpipe", "Schema name")
 dbutils.widgets.dropdown("device", "cuda", ["cuda", "cpu"], "Device")
 dbutils.widgets.text("whisper_model", "small", "Whisper model size")
@@ -49,6 +49,7 @@ t = lambda name: f"{catalog}.{schema}.{name}"
 
 # COMMAND ----------
 
+# DBTITLE 1,Setup: imports, paths, cu12 cuBLAS preload
 import os
 import sys
 import time
@@ -59,6 +60,13 @@ os.environ["HF_HOME"] = os.path.join(models_dir, "hf")
 
 repo_root = next(p for p in [Path.cwd(), *Path.cwd().parents] if (p / "src" / "vidpipe").is_dir())
 sys.path.insert(0, str(repo_root / "src"))
+
+# ctranslate2 (faster-whisper) needs cuBLAS 12, but this GPU image ships CUDA 13 only;
+# preload the pip-installed cu12 cuBLAS (nvidia-cublas-cu12 from the %pip cell) before any GPU call.
+import ctypes, sysconfig
+for _lib in ("libcublasLt.so.12", "libcublas.so.12"):
+    ctypes.CDLL(os.path.join(sysconfig.get_paths()["purelib"], "nvidia", "cublas", "lib", _lib),
+                mode=ctypes.RTLD_GLOBAL)
 
 import cv2
 import torch
