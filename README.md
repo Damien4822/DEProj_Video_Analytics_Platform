@@ -51,7 +51,7 @@ Design choice: everything is **CPU-friendly and lightweight** so it runs on a la
 | Summarizer (local LLM through Ollama: short summary with key moments, from the transcript) | Written, tests pass with a fake LLM; not yet run with a real model |
 | Embedder (sentence-transformers, default `BAAI/bge-small-en-v1.5`: one vector per chunk in pgvector) and the `scripts/search.py` semantic search | Written; unit tests pass, the database tests and the SQL have not been run against pgvector yet; not run end to end |
 | Postgres schema | DDL written for `videos`, `processing_runs`, audio, visual, chunk, timeline and embedding tables (with views for segment end times and per-video progress) |
-| Cloud: Databricks (`clouds/databricks/`) | Terraform, upload script and notebooks 01 and 02 (keyframes, Whisper, Florence-2, OCR) written; notebook 01 run on Free Edition, 02 being run; notebooks 03 and 04 (chunks, transcript JSON) written, not yet run; embeddings and jobs not yet |
+| Cloud: Databricks (`clouds/databricks/`) | Terraform, upload script and notebooks 01 to 04 (keyframes, Whisper, Florence-2, OCR, chunks, transcript JSON) written and run to the end on Free Edition; embeddings and the job not yet |
 | Cloud: AWS (`clouds/aws/`) | Planned, folder empty |
 
 The notebooks are the proof of the extraction logic. The Kafka services are the next step: moving the same logic into independent, scalable workers.
@@ -494,4 +494,4 @@ Failures land on the `pipeline.errors` topic (visible in Kafka UI) and as a `fai
 3. Run the downloader, audio, frame extractor, vision, chunk, timeline and summarizer workers end to end and record a scaling benchmark (1 versus N vision workers).
 4. ~~Embedder and the embeddings table~~ written; run it end to end and compare embedding models (bge-small versus bge-m3).
 5. ~~Search over chunks~~ `scripts/search.py` written; judge the result quality on real videos.
-6. Databricks: Terraform, upload script and notebooks 01 to 04 written (01 run, 02 being run); embeddings and a job still to do. AWS: Terraform for the GPU stack and the scaling work (the reason for moving on, since Free Edition is quota-limited).
+6. Databricks: Terraform, upload script and notebooks 01 to 04 written and run to the end on Free Edition; embeddings and a job still to do. AWS: Terraform for the GPU stack and the scaling work (the reason for moving on, since Free Edition is quota-limited).
