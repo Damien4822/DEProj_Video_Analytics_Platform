@@ -42,7 +42,9 @@ clouds/databricks/
 │   ├── 01_extract_keyframes.py  keyframes from the videos in `raw` -> `videos` and `frames` tables
 │   ├── 02_transcribe_and_describe.py  Whisper + Florence-2 + OCR -> audio, visual, object and OCR tables (resumable)
 │   ├── 03_build_chunks.py     overlapping time windows of speech, scene and on-screen text -> `chunks` table
-│   └── 04_build_transcript.py whole-video transcript JSON (for a summarizing LLM) -> `video_timelines` table
+│   ├── 04_build_transcript.py whole-video transcript JSON (for a summarizing LLM) -> `video_timelines` table
+│   ├── 05_embed_chunks.py     one vector per chunk (same TextEmbedder as local) -> `chunk_embeddings` table
+│   └── 06_search_chunks.py    semantic search over the stored vectors (read-only)
 └── scripts/                   helpers that run on your own machine
     └── upload_video.py        download a video with yt-dlp, upload it to the `raw` volume, delete the local copy
 ```
@@ -60,7 +62,7 @@ clouds/databricks/
 | Schema `vidpipe` (in your catalog) | Holds the pipeline's tables and volumes |
 | Volumes `raw`, `models`, `frames` | Videos plus the `_sources.json` register of the URLs they came from (written by the upload script), model weights and the Hugging Face cache, keyframe images |
 
-The notebooks create the Delta tables themselves (`videos` includes the `source_url` the video came from): `videos`, `frames`, `audio_segments`, `visual_segments`, `detected_objects`, `ocr_items`, `chunks` and `video_timelines` (the transcript JSON as text, with its SHA-256).
+The notebooks create the Delta tables themselves (`videos` includes the `source_url` the video came from): `videos`, `frames`, `audio_segments`, `visual_segments`, `detected_objects`, `ocr_items`, `chunks`, `video_timelines` (the transcript JSON as text, with its SHA-256) and `chunk_embeddings` (vectors as float arrays, keyed by chunk and model).
 
 ## Requirements
 
@@ -154,9 +156,14 @@ python clouds/databricks/scripts/upload_video.py "<video url>"      # after `sou
 3. Have the video in `raw` first (Step 3). Run `01_extract_keyframes`, then `02_transcribe_and_describe` (attach serverless **GPU** for 02, or set its `device` widget to `cpu`).
 4. **One video at a time:** both notebooks require the `filename` widget (the video's name in `raw`, e.g. `abc123.webm`) and stop if it is empty, so nothing else in `raw` is processed. Notebook 02 is resumable: it skips audio that is already transcribed and frames that are already described, and saves vision results every `write_every` frames, so a quota cut loses at most one batch. After re-running 01 on a video, set 02's `force` widget to `yes` so it redoes that video.
 5. After 02 has finished a video, run `03_build_chunks` and `04_build_transcript` with the same `filename`. They run on plain serverless CPU, install no packages and stop with a message if 02 has not described every keyframe. 03 has `window_s` and `overlap_s` widgets (45 and 10 by default); other values create a separate `chunk_version` beside the old chunks. 04 writes nothing when the rebuilt JSON is identical. If either fails on `import pydantic`, install it with `%pip install pydantic` and restart Python.
+   Then `05_embed_chunks` (CPU is enough for the default `BAAI/bge-small-en-v1.5`; set `model` to `BAAI/bge-m3` and `device` to `cuda` to try the larger one) and `06_search_chunks` (type a question in the `query` widget). 05 is resumable and re-embeds a chunk only when its text changed; 06 only reads.
 6. Each notebook installs its own pinned packages in its first `%pip` cell. If a version error appears, fix only the versions and copy the working pins back into the repo. Notebook 02 prints the versions that worked in its last cell. It pins `av` and `nvidia-cublas-cu12` and preloads the cuBLAS 12 library on GPU, because the GPU image ships a newer CUDA than `ctranslate2` (under faster-whisper) expects; `faster-whisper` itself is not pinned yet.
 
 Serverless compute is small, so keep to one video at a time. Notebook 02 prints seconds of compute per minute of video, for the scaling notes.
+
+## Checking the local and Databricks runs against each other
+
+Notebooks 03 to 05 print the same quantities as the local SQL checks in the root README, so the two runs can be compared side by side: chunks per video, vectors per model with their dimension, and chunks versus embedded (which should be equal). Run both on the same video and the same embedding model. The numbers should be close but not necessarily identical: video ids differ (the local id comes from the URL or file hash, the Databricks one from the file name), and model outputs can differ slightly between machines.
 
 ## Free Edition notes
 
@@ -167,8 +174,7 @@ Serverless compute is small, so keep to one video at a time. Notebook 02 prints 
 
 ## Next
 
-1. The embedder (bge-m3 should fit on the GPU option) and a Delta table for the vectors.
-2. `jobs.tf`: a serverless job that runs the notebooks in order.
-3. The summary stage is not ported: it needs an LLM server, which Free Edition does not give us.
+1. `jobs.tf`: a serverless job that runs the notebooks in order.
+2. The summary stage is not ported: it needs an LLM server, which Free Edition does not give us.
 
 Heavier models (larger Whisper and Florence-2 variants) and frame batching are left for the AWS stack, where GPU time is not rationed by a quota.

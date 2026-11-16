@@ -2,7 +2,7 @@
 #   docker build -f local/Dockerfile --target <light|media|vision> .
 #
 #   light   builders, summarizer and the setup scripts     (no ML libraries)
-#   media   downloader, frame extractor, audio worker      (ffmpeg, yt-dlp, OpenCV, faster-whisper)
+#   media   frame extractor, audio worker                  (ffmpeg, OpenCV, faster-whisper)
 #   vision  vision worker, CPU                             (torch, transformers, Florence-2, RapidOCR)
 #   embed   embedder worker and the search script, CPU     (torch, sentence-transformers)
 #
@@ -25,7 +25,7 @@ RUN pip install confluent-kafka pyyaml boto3 "pydantic>=2" "psycopg[binary]>=3.1
 FROM base AS media-deps
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
     && rm -rf /var/lib/apt/lists/*
-RUN pip install ffmpeg-python "yt-dlp[default]" opencv-python-headless numpy faster-whisper
+RUN pip install ffmpeg-python opencv-python-headless numpy faster-whisper
 
 FROM base AS vision-deps
 # libgl1 and libglib2.0-0: OpenCV (pulled in by RapidOCR) needs them

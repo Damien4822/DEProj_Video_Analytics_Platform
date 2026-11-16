@@ -131,14 +131,9 @@ services:
     restart: "no"
     depends_on: *infra-ready
 
-  downloader:
-    <<: *worker
-    build: { context: ../.., dockerfile: local/Dockerfile, target: media }
-    image: vidpipe-media
-    command: python -m services.downloader.worker
-    environment:
-      <<: *worker-env
-      YTDLP_NO_CERTIFI: ${YTDLP_NO_CERTIFI:-0}   # 1 on a network that re-signs HTTPS
+  # There is no downloader container: videos are fetched on your own machine with
+  # `python scripts/ingest_video.py <url>` (your network, your yt-dlp), which stores the video and
+  # announces it on video.stored. (The downloader worker still exists for scripts/submit_video.py.)
 
   frame-extractor:
     <<: *worker

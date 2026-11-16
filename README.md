@@ -44,14 +44,14 @@ Design choice: everything is **CPU-friendly and lightweight** so it runs on a la
 | Local infra definition (Kafka, S3-compatible store, Postgres + pgvector via Docker Compose) | Written |
 | Topic config + idempotent topic-creation script | Written |
 | Message schemas, Postgres/S3/Kafka helpers, quality checks (`src/vidpipe`) | Written, unit-tested |
-| Downloader and audio workers, `submit_video.py` | Written |
+| Ingest (`scripts/ingest_video.py`: download or take a file, store, announce), downloader and audio workers, `submit_video.py` | Written |
 | Frame extractor and vision worker (Florence-2 + OCR) | Written, tests pass; not yet run end to end |
 | Chunk builder (time-window chunks of speech, scene and on-screen text) | Written, tests pass; not yet run end to end |
 | Timeline builder (whole-video transcript JSON, same shape as the notebook output) | Written, tests pass; not yet run end to end |
 | Summarizer (local LLM through Ollama: short summary with key moments, from the transcript) | Written, tests pass with a fake LLM; not yet run with a real model |
 | Embedder (sentence-transformers, default `BAAI/bge-small-en-v1.5`: one vector per chunk in pgvector) and the `scripts/search.py` semantic search | Written; unit tests pass, the database tests and the SQL have not been run against pgvector yet; not run end to end |
 | Postgres schema | DDL written for `videos`, `processing_runs`, audio, visual, chunk, timeline and embedding tables (with views for segment end times and per-video progress) |
-| Cloud: Databricks (`clouds/databricks/`) | Terraform, upload script and notebooks 01 to 04 (keyframes, Whisper, Florence-2, OCR, chunks, transcript JSON) written and run to the end on Free Edition; embeddings and the job not yet |
+| Cloud: Databricks (`clouds/databricks/`) | Terraform, upload script and notebooks 01 to 04 (keyframes, Whisper, Florence-2, OCR, chunks, transcript JSON) written and run to the end on Free Edition; 05 and 06 (embeddings, search) written, not yet run; the job not yet |
 | Cloud: AWS (`clouds/aws/`) | Planned, folder empty |
 
 The notebooks are the proof of the extraction logic. The Kafka services are the next step: moving the same logic into independent, scalable workers.
@@ -316,7 +316,8 @@ flowchart LR
     │   ├── docker-compose.yml   # Kafka (KRaft), Kafka UI, RustFS (S3), Postgres + pgvector
     │   └── .env.example
     ├── scripts/create_topics.py # idempotent topic create/update
-    ├── scripts/submit_video.py  # entry point: publish a URL or file to video.requested
+    ├── scripts/ingest_video.py  # entry point: download (or take a file), store it, announce video.stored
+    ├── scripts/submit_video.py  # optional: publish to video.requested for the downloader worker
     ├── scripts/apply_sql.py     # apply sql/*.sql to an existing database
     ├── scripts/init_storage.py  # idempotent bucket creation
     ├── scripts/search.py        # semantic search over the embedded chunks
@@ -351,7 +352,32 @@ pip install -r requirements.txt
 pip install -e ..          # makes the shared `vidpipe` package importable (the scripts and workers need it)
 ```
 
-Then open `local/demo/Setup.ipynb` to download sample media, and run the notebooks under `local/demo/`. The first run downloads the Whisper and Florence-2 models (see Models below to check or fetch them first).
+The notebooks under `local/demo/` (start with `Setup.ipynb`) are the original single-machine stage. The Kafka pipeline below does not need them.
+
+### Before you start
+
+| Need | For | Check |
+|---|---|---|
+| Docker with Compose v2 | the infrastructure (and the containers, if you choose them) | `docker compose version` |
+| Python 3.10 and the venv above | `ingest_video.py`, `check_models.py`, and every worker in the terminal route | `python --version` inside the venv |
+| `ffmpeg` (with `ffprobe`) on the PATH | `ingest_video.py` (it reads the video's duration and merges streams), and the audio worker in the terminal route (the containers include their own) | `ffmpeg -version` |
+| Ollama and `qwen2.5:3b` | the summarizer only; the rest of the pipeline runs without it | `ollama list` |
+| About 3 GB for models, plus the Docker images | first-run downloads (Models below) | |
+
+Two things to know for the first run:
+- Use a **short video** (a few minutes) first. The video is fetched by `scripts/ingest_video.py` on your own machine, with your network, so a YouTube link also needs a JavaScript runtime (Deno 2+ or Node 20+) there. There is no downloader container.
+- Pick **one route** for the workers: the terminals (below) or the containers (the section after). Do not run both at once, and note that they keep separate model caches (your Hugging Face cache versus the `models` volume), so each downloads the models once.
+
+### The first run, step by step
+
+Terminal route (for the containers, follow steps 1 and 2 and then the section after Models):
+
+1. Create the venv and install, as above (once).
+2. `cd local/infra && cp .env.example .env && docker compose up -d`, then `docker compose ps` until Kafka and Postgres show `healthy`.
+3. From `local/`: `python scripts/create_topics.py` and `python scripts/init_storage.py`. The Postgres tables are created automatically on a new volume.
+4. `python scripts/check_models.py --download`, and `ollama pull qwen2.5:3b` if you want summaries.
+5. Start the workers, each in its own terminal (list below).
+6. Ingest a video with `python scripts/ingest_video.py "<video url>"` (or `--file path/to/video.mp4`) and watch it go through (the SQL under "Check the result in Postgres"). Start the workers first; messages are kept, so a worker started later still picks them up.
 
 ### Models
 
@@ -380,6 +406,7 @@ Local infrastructure:
 cd local/infra
 cp .env.example .env
 docker compose up -d
+docker compose ps                           # wait until kafka and postgres are healthy
 cd ..
 python scripts/create_topics.py --dry-run   # preview
 python scripts/create_topics.py             # apply
@@ -394,29 +421,26 @@ The summarizer needs a local LLM server. Install [Ollama](https://ollama.com/dow
 ollama pull qwen2.5:3b          # Ollama listens on http://localhost:11434
 ```
 
-Run the pipeline, from `local/`, each in its own terminal:
+Run the pipeline, each worker in its own terminal. In every terminal first `cd local` and `source .env/bin/activate`. The workers read `local/infra/.env` by themselves.
 
 ```bash
-python scripts/apply_sql.py                 # create the tables; needed on a Postgres volume made before the embedding tables (006) existed, harmless otherwise
+python -m services.audio_worker.worker      # terminal 1
+python -m services.frame_extractor.worker   # terminal 2
+python -m services.vision_worker.worker     # terminal 3 (start more copies to go faster)
+python -m services.chunk_builder.worker     # terminal 4 (chunks, for search)
+python -m services.timeline_builder.worker  # terminal 5 (whole-video transcript JSON)
+python -m services.summarizer.worker        # terminal 6 (short summary; needs Ollama running)
+python -m services.embedder.worker          # terminal 7 (one vector per chunk, for search)
 
-python -m services.downloader.worker        # terminal 1
-python -m services.audio_worker.worker      # terminal 2
-python -m services.frame_extractor.worker   # terminal 3
-python -m services.vision_worker.worker     # terminal 4 (start more copies to go faster)
-python -m services.chunk_builder.worker     # terminal 5 (chunks, for search)
-python -m services.timeline_builder.worker  # terminal 6 (whole-video transcript JSON)
-python -m services.summarizer.worker        # terminal 7 (short summary; needs Ollama running)
-python -m services.embedder.worker          # terminal 8 (one vector per chunk, for search)
-
-python scripts/create_topics.py             # again, if the topics were created before timeline.ready, chunk.ready or chunk.embedded existed
-
-python scripts/submit_video.py "<video url>"            # terminal 9: submit a URL
-python scripts/submit_video.py --file path/to/video.mp4  # or a local file
+python scripts/ingest_video.py "<video url>"             # terminal 8: download here, store, start the pipeline; prints the video_id
+python scripts/ingest_video.py --file path/to/video.mp4   # or a local file
 ```
+
+If the Postgres volume was created before the embedding tables (`006`) existed, run `python scripts/apply_sql.py` once. If the topics were created before `timeline.ready`, `chunk.ready` or `chunk.embedded` existed, run `python scripts/create_topics.py` again. To start completely clean, `docker compose down -v` (from `local/infra`) deletes the volumes, including all stored data, and then you repeat the first-run steps.
 
 ### Or run the workers in containers
 
-The same workers can run as containers instead of one terminal each. The infrastructure still starts as before; the workers are behind a compose profile:
+The same workers can run as containers instead of one terminal each. You still need step 1 (the venv, because `ingest_video.py` runs on the host) and the `.env` file from step 2. The `docker compose --profile workers up` below then starts the infrastructure, creates the topics, bucket and tables (the `init` job) and starts every worker, so steps 3 and 5 are not needed; the models download on first use (step 4 is optional, see Models for the container check). The workers are behind a compose profile:
 
 ```bash
 cd local/infra
@@ -426,15 +450,21 @@ docker compose --profile workers up -d --scale vision-worker=3   # more vision w
 docker compose --profile workers logs -f vision-worker
 docker compose --profile workers down                 # stop (the models volume is kept)
 
-python scripts/submit_video.py "<video url>"          # from local/, on the host, as before
+python scripts/ingest_video.py "<video url>"          # from local/, on the host: downloads with your own network and starts the pipeline
 ```
 
 - A one-shot `init` service creates the topics and bucket and applies the SQL before any worker starts.
-- Four images are built from `local/Dockerfile`: `light` (builders, summarizer), `media` (downloader, frame extractor, audio worker), `vision` (CPU) and `embed` (the embedder and the search script). The Whisper, Florence-2 and embedding models are downloaded on first use into the `models` volume, so a restart does not download them again.
+- Four images are built from `local/Dockerfile`: `light` (builders, summarizer), `media` (frame extractor, audio worker), `vision` (CPU) and `embed` (the embedder and the search script). The Whisper, Florence-2 and embedding models are downloaded on first use into the `models` volume, so a restart does not download them again.
 - The summarizer reaches Ollama on the host, which must listen on all interfaces: `OLLAMA_HOST=0.0.0.0 ollama serve`.
-- On a network that re-signs HTTPS, copy the CA certificate (a `.crt` file) into `local/ca/` before building (it is git-ignored), and set `YTDLP_NO_CERTIFI=1` in `local/infra/.env`.
+- On a network that re-signs HTTPS, copy the CA certificate (a `.crt` file) into `local/ca/` before building (it is git-ignored), and, for `ingest_video.py` on the host, set `YTDLP_NO_CERTIFI=1` in `local/infra/.env`.
 
-Check the result in Postgres:
+Check the result in Postgres. Open a SQL prompt (the user, password and database come from `local/infra/.env`; the defaults are all `vidpipe`):
+
+```bash
+docker exec -it vidpipe-postgres psql -U vidpipe -d vidpipe
+```
+
+`ingest_video.py` printed your `video_id`; to list the ones the pipeline knows: `SELECT video_id, filename, source_url FROM videos;`. A healthy run goes in this order: `video_progress` shows the keyframes and described frames growing, then `audio_segments`, `chunks` and `video_timelines` fill in, then `chunk_embeddings` and `video_summaries`. Anything that failed shows in `processing_runs` and in the `pipeline.errors` topic in Kafka UI.
 
 ```sql
 SELECT start_s, end_s, text FROM audio_segments WHERE video_id = '<video_id>' ORDER BY start_s;
@@ -491,7 +521,7 @@ Failures land on the `pipeline.errors` topic (visible in Kafka UI) and as a `fai
 
 1. Bring up the local stack and create the topics.
 2. Define the message envelope and schemas in `src/vidpipe/schemas`.
-3. Run the downloader, audio, frame extractor, vision, chunk, timeline and summarizer workers end to end and record a scaling benchmark (1 versus N vision workers).
+3. Ingest a video, then run the audio, frame extractor, vision, chunk, timeline and summarizer workers end to end and record a scaling benchmark (1 versus N vision workers).
 4. ~~Embedder and the embeddings table~~ written; run it end to end and compare embedding models (bge-small versus bge-m3).
 5. ~~Search over chunks~~ `scripts/search.py` written; judge the result quality on real videos.
-6. Databricks: Terraform, upload script and notebooks 01 to 04 written and run to the end on Free Edition; embeddings and a job still to do. AWS: Terraform for the GPU stack and the scaling work (the reason for moving on, since Free Edition is quota-limited).
+6. Databricks: Terraform, upload script and notebooks 01 to 04 written and run to the end on Free Edition; 05 and 06 (embeddings, search) written, to run next to the local embedder for comparison; a job still to do. AWS: Terraform for the GPU stack and the scaling work (the reason for moving on, since Free Edition is quota-limited).
