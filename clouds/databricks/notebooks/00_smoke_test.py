@@ -1,4 +1,9 @@
 # Databricks notebook source
+# /// script
+# [tool.databricks.environment]
+# base_environment = "databricks_ai_v6"
+# environment_version = "6"
+# ///
 # MAGIC %md
 # MAGIC # 00 Smoke test
 # MAGIC What does Free Edition serverless let us do? Run the cells top to bottom and note which one fails.

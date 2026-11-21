@@ -1,4 +1,8 @@
 # Databricks notebook source
+# /// script
+# [tool.databricks.environment]
+# environment_version = "6"
+# ///
 # MAGIC %md
 # MAGIC # 06 Search chunks
 # MAGIC Databricks version of `scripts/search.py`. Embeds a question with the same model as the chunks and returns the

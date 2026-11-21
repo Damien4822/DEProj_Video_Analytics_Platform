@@ -1,4 +1,8 @@
 # Databricks notebook source
+# /// script
+# [tool.databricks.environment]
+# environment_version = "6"
+# ///
 # MAGIC %md
 # MAGIC # 05 Embed chunks
 # MAGIC Databricks version of the `embedder` worker. Turns each row of the `chunks` table (notebook 03) into one vector

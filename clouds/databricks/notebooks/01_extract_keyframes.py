@@ -1,4 +1,9 @@
 # Databricks notebook source
+# /// script
+# [tool.databricks.environment]
+# base_environment = "databricks_ai_v6"
+# environment_version = "6"
+# ///
 # MAGIC %md
 # MAGIC # 01 Extract keyframes
 # MAGIC Databricks version of the `frame_extractor` worker. Every video in the `raw` volume becomes keyframe JPEGs
