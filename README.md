@@ -51,7 +51,7 @@ Design choice: everything is **CPU-friendly and lightweight** so it runs on a la
 | Summarizer (local LLM through Ollama: short summary with key moments, from the transcript) | Written, tests pass with a fake LLM; not yet run with a real model |
 | Embedder (sentence-transformers, default `BAAI/bge-small-en-v1.5`: one vector per chunk in pgvector) and the `scripts/search.py` semantic search | Written; unit tests pass, the database tests and the SQL have not been run against pgvector yet; not run end to end |
 | Postgres schema | DDL written for `videos`, `processing_runs`, audio, visual, chunk, timeline and embedding tables (with views for segment end times and per-video progress) |
-| Cloud: Databricks (`clouds/databricks/`) | Terraform, upload script and notebooks 01 to 04 (keyframes, Whisper, Florence-2, OCR, chunks, transcript JSON) written and run to the end on Free Edition; 05 and 06 (embeddings, search) written, not yet run; the job not yet |
+| Cloud: Databricks (`clouds/databricks/`) | Terraform, upload script and notebooks 01 to 06 (keyframes, Whisper, Florence-2, OCR, chunks, transcript JSON, embeddings, search) written and run to the end on Free Edition; the job not yet |
 | Cloud: AWS (`clouds/aws/`) | Planned, folder empty |
 
 The notebooks are the proof of the extraction logic. The Kafka services are the next step: moving the same logic into independent, scalable workers.
@@ -298,7 +298,7 @@ flowchart LR
 
 ### Databricks plan
 
-- Built so far (see `clouds/databricks/README.md`): Terraform for the schema and volumes, an upload script, and notebooks for keyframes and for transcription plus frame description, writing Delta tables.
+- Built so far (see `clouds/databricks/README.md`): Terraform for the schema and volumes, an upload script, and notebooks that run the whole pipeline on one video (keyframes, transcription plus frame description, chunks, transcript JSON, embeddings, search), writing Delta tables.
 - Planned: raw video and audio in Unity Catalog Volumes; segments and chunks as Delta tables; embeddings served through Databricks Vector Search.
 - The Free Edition is serverless with limits (GPU availability and Vector Search endpoints are restricted), so it suits the storage and SQL parts better than model inference.
 - Shared logic (for example a `FrameDescriber` class) is written once and used by both the Kafka worker and a Spark `mapInPandas` variant, if Spark is ever adopted.
@@ -524,4 +524,4 @@ Failures land on the `pipeline.errors` topic (visible in Kafka UI) and as a `fai
 3. Ingest a video, then run the audio, frame extractor, vision, chunk, timeline and summarizer workers end to end and record a scaling benchmark (1 versus N vision workers).
 4. ~~Embedder and the embeddings table~~ written; run it end to end and compare embedding models (bge-small versus bge-m3).
 5. ~~Search over chunks~~ `scripts/search.py` written; judge the result quality on real videos.
-6. Databricks: Terraform, upload script and notebooks 01 to 04 written and run to the end on Free Edition; 05 and 06 (embeddings, search) written, to run next to the local embedder for comparison; a job still to do. AWS: Terraform for the GPU stack and the scaling work (the reason for moving on, since Free Edition is quota-limited).
+6. Databricks: Terraform, upload script and notebooks 01 to 06 (through embeddings and search) written and run to the end on Free Edition; comparing its results with the local embedder and a job still to do. AWS: Terraform for the GPU stack and the scaling work (the reason for moving on, since Free Edition is quota-limited).

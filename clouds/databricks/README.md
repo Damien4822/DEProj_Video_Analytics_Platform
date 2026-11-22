@@ -8,7 +8,7 @@ Terraform, notebooks and a helper script for the Databricks (lakehouse/batch) va
 
 **What it is used for here**
 - Terraform for the schema and volumes, applied and destroyed from a local machine.
-- Notebooks 01 and 02 running the same `src/vidpipe` code as the Kafka workers, one named video at a time.
+- Notebooks 01 to 06 running the same `src/vidpipe` code as the Kafka workers, one named video at a time, from keyframes to embeddings and semantic search. All six have run to the end on Free Edition.
 - Delta tables for the results, and a local helper script that uploads videos and avoids duplicates.
 - Timings per minute of video (printed by notebook 02) as input for the scaling design.
 
@@ -157,7 +157,8 @@ python clouds/databricks/scripts/upload_video.py "<video url>"      # after `sou
 4. **One video at a time:** both notebooks require the `filename` widget (the video's name in `raw`, e.g. `abc123.webm`) and stop if it is empty, so nothing else in `raw` is processed. Notebook 02 is resumable: it skips audio that is already transcribed and frames that are already described, and saves vision results every `write_every` frames, so a quota cut loses at most one batch. After re-running 01 on a video, set 02's `force` widget to `yes` so it redoes that video.
 5. After 02 has finished a video, run `03_build_chunks` and `04_build_transcript` with the same `filename`. They run on plain serverless CPU, install no packages and stop with a message if 02 has not described every keyframe. 03 has `window_s` and `overlap_s` widgets (45 and 10 by default); other values create a separate `chunk_version` beside the old chunks. 04 writes nothing when the rebuilt JSON is identical. If either fails on `import pydantic`, install it with `%pip install pydantic` and restart Python.
    Then `05_embed_chunks` (CPU is enough for the default `BAAI/bge-small-en-v1.5`; set `model` to `BAAI/bge-m3` and `device` to `cuda` to try the larger one) and `06_search_chunks` (type a question in the `query` widget). 05 is resumable and re-embeds a chunk only when its text changed; 06 only reads.
-6. Each notebook installs its own pinned packages in its first `%pip` cell. If a version error appears, fix only the versions and copy the working pins back into the repo. Notebook 02 prints the versions that worked in its last cell. It pins `av` and `nvidia-cublas-cu12` and preloads the cuBLAS 12 library on GPU, because the GPU image ships a newer CUDA than `ctranslate2` (under faster-whisper) expects; `faster-whisper` itself is not pinned yet.
+6. The notebook files begin with a `# /// script` header (`environment_version = "6"`; 00 and 01 also name `base_environment = "databricks_ai_v6"`). Databricks writes it when a notebook is saved from the workspace, and it selects the serverless environment the notebook ran on. Keep it, so a re-run uses the same base environment as the successful run; 02 has none and relies on its own pins.
+7. Each notebook installs its own pinned packages in its first `%pip` cell. If a version error appears, fix only the versions and copy the working pins back into the repo. Notebook 02 prints the versions that worked in its last cell. It pins `av` and `nvidia-cublas-cu12` and preloads the cuBLAS 12 library on GPU, because the GPU image ships a newer CUDA than `ctranslate2` (under faster-whisper) expects; `faster-whisper` itself is not pinned yet.
 
 Serverless compute is small, so keep to one video at a time. Notebook 02 prints seconds of compute per minute of video, for the scaling notes.
 
