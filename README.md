@@ -436,6 +436,8 @@ python scripts/ingest_video.py "<video url>"             # terminal 8: download 
 python scripts/ingest_video.py --file path/to/video.mp4   # or a local file
 ```
 
+`ingest_video.py --no-announce` stores the video and registers it without starting the pipeline (the workers do nothing until it is announced). To go through Kafka instead, run `python -m services.downloader.worker` (terminal route only; there is no downloader container) and submit with `python scripts/submit_video.py "<video url>"`.
+
 If the Postgres volume was created before the embedding tables (`006`) existed, run `python scripts/apply_sql.py` once. If the topics were created before `timeline.ready`, `chunk.ready` or `chunk.embedded` existed, run `python scripts/create_topics.py` again. To start completely clean, `docker compose down -v` (from `local/infra`) deletes the volumes, including all stored data, and then you repeat the first-run steps.
 
 ### Or run the workers in containers
@@ -507,6 +509,25 @@ CREATE INDEX IF NOT EXISTS idx_chunk_embeddings_bge_m3 ON chunk_embeddings
 ```
 
 The query is embedded with the same model as the chunks (`EMBED_MODEL`). Changing `EMBED_MODEL` leaves the old vectors in place and embeds newly built chunks with the new model (see the note above for existing videos). With containers: `docker compose --profile workers run --rm embedder python scripts/search.py "your query"`.
+
+### Verifying a full run
+
+Do this once on a short video, with the infrastructure up and every worker running (terminals or containers), to show the pipeline works end to end and that pgvector is in use. From `local/`:
+
+```bash
+python scripts/ingest_video.py "<video url>"            # note the video_id it prints
+pytest                                                   # with Postgres up, the database tests run instead of being skipped
+python scripts/search.py "<something said in the video>" --video <video_id> --limit 5
+```
+
+```sql
+SELECT extname, extversion FROM pg_extension WHERE extname = 'vector';   -- the pgvector extension is installed
+SELECT stage, status FROM processing_runs WHERE video_id = '<video_id>'; -- every stage 'succeeded'; no 'failed' row
+SELECT * FROM video_progress WHERE video_id = '<video_id>';               -- frames_described = keyframe_count, chunks = embedded
+SELECT model, dim, count(*) FROM chunk_embeddings GROUP BY model, dim;   -- one model, 384 for the default
+```
+
+The run passes when: every stage succeeded, the `pipeline.errors` topic is empty in Kafka UI, `chunks` equals `embedded`, `pytest` reports no skipped database tests, and `search.py` returns timestamped chunks from the video. Record the date, the video length and the time per stage here. Only then change the status rows above from "not yet run end to end" to "run".
 
 Failures land on the `pipeline.errors` topic (visible in Kafka UI) and as a `failed` row in `processing_runs`. Tests: `pytest` from `local/` (the database tests are skipped when Postgres is not running).
 
