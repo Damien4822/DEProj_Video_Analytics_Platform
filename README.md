@@ -45,11 +45,11 @@ Design choice: everything is **CPU-friendly and lightweight** so it runs on a la
 | Topic config + idempotent topic-creation script | Written |
 | Message schemas, Postgres/S3/Kafka helpers, quality checks (`src/vidpipe`) | Written, unit-tested |
 | Ingest (`scripts/ingest_video.py`: download or take a file, store, announce), downloader and audio workers, `submit_video.py` | Written |
-| Frame extractor and vision worker (Florence-2 + OCR) | Written, tests pass; not yet run end to end |
-| Chunk builder (time-window chunks of speech, scene and on-screen text) | Written, tests pass; not yet run end to end |
+| Frame extractor and vision worker (Florence-2 + OCR) | Written, tests pass; run in containers on a 54 min lecture (3001 keyframes) |
+| Chunk builder (time-window chunks of speech, scene and on-screen text) | Written, tests pass; run in containers (93 chunks for the 54 min lecture). It builds only once the whole video is described, so on a long video `chunks` stays 0 until the vision stage finishes |
 | Timeline builder (whole-video transcript JSON, same shape as the notebook output) | Written, tests pass; not yet run end to end |
-| Summarizer (local LLM through Ollama: short summary with key moments, from the transcript) | Written, tests pass with a fake LLM; not yet run with a real model |
-| Embedder (sentence-transformers, default `BAAI/bge-small-en-v1.5`: one vector per chunk in pgvector) and the `scripts/search.py` semantic search | Written; unit tests pass, the database tests and the SQL have not been run against pgvector yet; not run end to end |
+| Summarizer (local LLM through Ollama: short summary with key moments, from the transcript) | Written, tests pass with a fake LLM; started in a container against Ollama (`qwen2.5:3b`) on the 54 min lecture. Mark it as run once `video_summaries` has the row |
+| Embedder (sentence-transformers, default `BAAI/bge-small-en-v1.5`: one vector per chunk in pgvector) and the `scripts/search.py` semantic search | Written; unit tests pass, run end to end in containers with both `bge-small` and `bge-m3` (93 of 93 chunks embedded with each); search returns sensible timestamped chunks, but short keyword-like queries do not always rank the exact phrase first (hybrid search would help) |
 | Postgres schema | DDL written for `videos`, `processing_runs`, audio, visual, chunk, timeline and embedding tables (with views for segment end times and per-video progress) |
 | Cloud: Databricks (`clouds/databricks/`) | Terraform, upload script and notebooks 01 to 06 (keyframes, Whisper, Florence-2, OCR, chunks, transcript JSON, embeddings, search) written and run to the end on Free Edition; the job not yet |
 | Cloud: AWS (`clouds/aws/`) | Planned, folder empty |
@@ -457,7 +457,8 @@ python scripts/ingest_video.py "<video url>"          # from local/, on the host
 
 - A one-shot `init` service creates the topics and bucket and applies the SQL before any worker starts.
 - Four images are built from `local/Dockerfile`: `light` (builders, summarizer), `media` (frame extractor, audio worker), `vision` (CPU) and `embed` (the embedder and the search script). The Whisper, Florence-2 and embedding models are downloaded on first use into the `models` volume, so a restart does not download them again.
-- The summarizer reaches Ollama on the host, which must listen on all interfaces: `OLLAMA_HOST=0.0.0.0 ollama serve`.
+- The summarizer reaches Ollama on the host, which must listen on all interfaces: `OLLAMA_HOST=0.0.0.0 ollama serve`. With the systemd service, add `Environment="OLLAMA_HOST=0.0.0.0"` through `sudo systemctl edit ollama` and restart it. Check with `ss -ltn | grep 11434`: `127.0.0.1:11434` is too narrow (`curl localhost:11434` works from the host, but the container gets `Connection refused`); it should show `*:11434` or `0.0.0.0:11434`. Also run `ollama list` to confirm `qwen2.5:3b` is pulled.
+- A failed summary is **not retried** (`max_attempts=1`, because a CPU call can take minutes), and the failure goes to `pipeline.errors`. After fixing the cause, rewind the group so the worker reads `timeline.ready` again: `docker compose stop summarizer`, then `kafka-consumer-groups.sh --group vidpipe-summary --topic timeline.ready --reset-offsets --to-earliest --execute` (same way as for the embedder, `--bootstrap-server localhost:19092` inside `vidpipe-kafka`), then `docker compose --profile workers up -d summarizer`.
 - On a network that re-signs HTTPS, copy the CA certificate (a `.crt` file) into `local/ca/` before building (it is git-ignored), and, for `ingest_video.py` on the host, set `YTDLP_NO_CERTIFI=1` in `local/infra/.env`.
 
 Check the result in Postgres. Open a SQL prompt (the user, password and database come from `local/infra/.env`; the defaults are all `vidpipe`):
@@ -501,7 +502,18 @@ python scripts/search.py "stress" --video <video_id> --limit 10
 
 The embedder needs the `chunks` rows to exist first, so it starts producing vectors once the chunk builder has run (the video must be fully described). If `chunk_embeddings` stays empty, check, in order: the embedder terminal for errors, `check_models.py` for the model, and that `chunks` has rows for the video.
 
-To try `BAAI/bge-m3` (1024 dimensions, larger and slower, no query prefix): set `EMBED_MODEL=BAAI/bge-m3` for the embedder and `search.py` (in `local/infra/.env` for containers), and run `check_models.py --download`. New videos are embedded with it from then on. Videos already processed are **not** embedded again automatically: the chunk builder emits `chunk.ready` only when chunks change, so re-running it on unchanged chunks does nothing. To embed an existing video with the new model, change `CHUNK_WINDOW_S` or `CHUNK_OVERLAP_S` (a new chunk version means new chunks and new events), or submit it as a new video. Search works without an index. For a large collection add an index for that model, as `006_embeddings.sql` does for the default:
+To try `BAAI/bge-m3` (1024 dimensions, larger and slower, no query prefix): set `EMBED_MODEL=BAAI/bge-m3` for the embedder and `search.py` (in `local/infra/.env` for containers), and run `check_models.py --download`. New videos are embedded with it from then on. Videos already processed are **not** embedded again automatically: the chunk builder emits `chunk.ready` only when chunks change, so re-running it on unchanged chunks does nothing. To embed an existing video with the new model, either rewind the embedder's consumer group so it reads `chunk.ready` again (below), change `CHUNK_WINDOW_S` or `CHUNK_OVERLAP_S` (a new chunk version means new chunks and new events), or submit it as a new video.
+
+With containers, set `EMBED_MODEL=BAAI/bge-m3` in `local/infra/.env` (the full Hugging Face id), then recreate the service with `docker compose up -d embedder`: `restart` does not re-read `.env`. Check it with `docker compose exec embedder env | grep EMBED_MODEL`. Keep the `EMBED_MODEL` of your shell (used by `search.py`) equal to the container's, or pass `--model`; otherwise search says `no embedded chunks for model ...`. Do this before a video's chunks are built, so one video is not split across two models. To re-embed finished videos, rewind the group (the embedder skips chunks that already have a vector for its model, so this is safe; the first chunk downloads the model):
+
+```bash
+docker compose stop embedder
+docker exec vidpipe-kafka /opt/kafka/bin/kafka-consumer-groups.sh --bootstrap-server localhost:19092 \
+  --group vidpipe-embed --topic chunk.ready --reset-offsets --to-earliest --dry-run   # then --execute
+docker compose up -d embedder
+```
+
+Old messages whose chunks were rebuilt log `no longer exists, skipping`; that is harmless. Search works without an index. For a large collection add an index for that model, as `006_embeddings.sql` does for the default:
 
 ```sql
 CREATE INDEX IF NOT EXISTS idx_chunk_embeddings_bge_m3 ON chunk_embeddings
@@ -524,10 +536,12 @@ python scripts/search.py "<something said in the video>" --video <video_id> --li
 SELECT extname, extversion FROM pg_extension WHERE extname = 'vector';   -- the pgvector extension is installed
 SELECT stage, status FROM processing_runs WHERE video_id = '<video_id>'; -- every stage 'succeeded'; no 'failed' row
 SELECT * FROM video_progress WHERE video_id = '<video_id>';               -- frames_described = keyframe_count, chunks = embedded
-SELECT model, dim, count(*) FROM chunk_embeddings GROUP BY model, dim;   -- one model, 384 for the default
+SELECT model, dim, count(*) FROM chunk_embeddings GROUP BY model, dim;   -- one row per model, 384 for the default and 1024 for bge-m3
 ```
 
 The run passes when: every stage succeeded, the `pipeline.errors` topic is empty in Kafka UI, `chunks` equals `embedded`, `pytest` reports no skipped database tests, and `search.py` returns timestamped chunks from the video. Record the date, the video length and the time per stage here. Only then change the status rows above from "not yet run end to end" to "run".
+
+**Run record (local, containers):** 54 min lecture (3242 s, 3001 keyframes, 1149 audio segments), 93 chunks, all embedded with `bge-small` and with `bge-m3`. Total about 4 hours on a CPU VM from submit to the last stage; per-stage times were not recorded, but the vision stage (Florence-2 on every keyframe) is the slow one, and `chunks` stays 0 until it finishes.
 
 Failures land on the `pipeline.errors` topic (visible in Kafka UI) and as a `failed` row in `processing_runs`. Tests: `pytest` from `local/` (the database tests are skipped when Postgres is not running).
 
@@ -543,6 +557,6 @@ Failures land on the `pipeline.errors` topic (visible in Kafka UI) and as a `fai
 1. Bring up the local stack and create the topics.
 2. Define the message envelope and schemas in `src/vidpipe/schemas`.
 3. Ingest a video, then run the audio, frame extractor, vision, chunk, timeline and summarizer workers end to end and record a scaling benchmark (1 versus N vision workers).
-4. ~~Embedder and the embeddings table~~ written; run it end to end and compare embedding models (bge-small versus bge-m3).
-5. ~~Search over chunks~~ `scripts/search.py` written; judge the result quality on real videos.
+4. ~~Embedder and the embeddings table~~ run end to end with bge-small and bge-m3 (same 93 chunks, both stored); a side-by-side quality comparison on more queries is still open.
+5. ~~Search over chunks~~ `scripts/search.py` verified on a 54 min lecture: topical queries land on the right region; short exact-phrase queries rank it only 5th. Possible next step: hybrid search (vector + Postgres full-text).
 6. Databricks: Terraform, upload script and notebooks 01 to 06 (through embeddings and search) written and run to the end on Free Edition; comparing its results with the local embedder and a job still to do. AWS: Terraform for the GPU stack and the scaling work (the reason for moving on, since Free Edition is quota-limited).
